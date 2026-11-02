@@ -82,6 +82,7 @@ class AuthManager(
 
         val request = Request.Builder()
             .url("$authHost/token/json/2/device/new")
+            .header("User-Agent", RMCloudClient.USER_AGENT)
             .post(payload.toRequestBody("application/json".toMediaType()))
             .build()
 
@@ -125,6 +126,7 @@ class AuthManager(
         val request = Request.Builder()
             .url("$authHost/token/json/2/user/new")
             .header("Authorization", "Bearer $deviceToken")
+            .header("User-Agent", RMCloudClient.USER_AGENT)
             .post("".toRequestBody(null))
             .build()
 
@@ -158,7 +160,7 @@ class AuthManager(
 
     companion object {
         const val DEFAULT_AUTH_HOST = "https://webapp-prod.cloud.remarkable.engineering"
-        const val DEFAULT_DEVICE_DESC = "android"
+        const val DEFAULT_DEVICE_DESC = "desktop-linux"
         const val EXPIRATION_BUFFER_SECONDS = 120L
 
         fun defaultAuthClient(): OkHttpClient {

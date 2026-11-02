@@ -96,7 +96,7 @@ fun OnboardingScreen(
                     onClick = {
                         val browserIntent = Intent(
                             Intent.ACTION_VIEW,
-                            Uri.parse("https://my.remarkable.com/device/browser/connect")
+                            Uri.parse("https://my.remarkable.com/device/desktop/connect")
                         )
                         context.startActivity(browserIntent)
                     },
