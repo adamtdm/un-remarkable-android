@@ -47,6 +47,7 @@ fun LibraryScreen(
     onQuickCapture: () -> Unit,
     onOpenConverter: () -> Unit,
     onOpenSettings: () -> Unit = {},
+    onOpenMeetingRecorder: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -116,6 +117,9 @@ fun LibraryScreen(
                             Icon(Icons.Default.ViewSidebar, contentDescription = "Minimize to Rail")
                         }
                     }
+                    IconButton(onClick = onOpenMeetingRecorder) {
+                        Icon(Icons.Default.Mic, contentDescription = "Record Meeting")
+                    }
                     IconButton(onClick = onSyncNow, enabled = !isSyncing) {
                         if (isSyncing) {
                             CircularProgressIndicator(
@@ -134,6 +138,14 @@ fun LibraryScreen(
         },
         floatingActionButton = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SmallFloatingActionButton(
+                    onClick = onOpenMeetingRecorder,
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    shape = CircleShape
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = "Record Meeting")
+                }
                 SmallFloatingActionButton(
                     onClick = onOpenConverter,
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,

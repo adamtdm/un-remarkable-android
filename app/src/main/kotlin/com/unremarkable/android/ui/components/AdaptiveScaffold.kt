@@ -44,6 +44,7 @@ fun AdaptiveScaffold(
     onQuickCapture: () -> Unit,
     onOpenConverter: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenMeetingRecorder: () -> Unit = {},
     selectedDocument: DocumentItem?,
     onSelectDocument: (DocumentItem?) -> Unit,
     blobStore: BlobStore? = null,
@@ -90,6 +91,7 @@ fun AdaptiveScaffold(
                             onQuickCapture = onQuickCapture,
                             onOpenConverter = onOpenConverter,
                             onOpenSettings = onOpenSettings,
+                            onOpenMeetingRecorder = onOpenMeetingRecorder,
                             isFoldable = true,
                             onMinimizeSidebar = { sidebarMode = SidebarMode.MINIMIZED_RAIL }
                         )
@@ -116,6 +118,12 @@ fun AdaptiveScaffold(
                                     onClick = { onSelectDocument(null) },
                                     icon = { Icon(Icons.Default.Folder, contentDescription = "Library") },
                                     label = { Text("Library", style = MaterialTheme.typography.labelSmall) }
+                                )
+                                NavigationRailItem(
+                                    selected = false,
+                                    onClick = onOpenMeetingRecorder,
+                                    icon = { Icon(Icons.Default.Mic, contentDescription = "Meeting") },
+                                    label = { Text("Meeting", style = MaterialTheme.typography.labelSmall) }
                                 )
                                 NavigationRailItem(
                                     selected = false,
@@ -182,6 +190,7 @@ fun AdaptiveScaffold(
                             }
                         },
                         onSelectDocument = onSelectDocument,
+                        onOpenMeetingRecorder = onOpenMeetingRecorder,
                         onBack = { onSelectDocument(null) }
                     )
                 } else {
@@ -285,6 +294,7 @@ fun AdaptiveScaffold(
                 isFoldable = false,
                 isFullscreen = false,
                 onSelectDocument = onSelectDocument,
+                onOpenMeetingRecorder = onOpenMeetingRecorder,
                 onBack = { onSelectDocument(null) },
                 modifier = modifier
             )
@@ -300,6 +310,7 @@ fun AdaptiveScaffold(
                 onQuickCapture = onQuickCapture,
                 onOpenConverter = onOpenConverter,
                 onOpenSettings = onOpenSettings,
+                onOpenMeetingRecorder = onOpenMeetingRecorder,
                 isFoldable = false,
                 modifier = modifier
             )

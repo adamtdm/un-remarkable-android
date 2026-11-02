@@ -56,6 +56,7 @@ fun ReaderScreen(
     isFullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
     onSelectDocument: (DocumentItem) -> Unit = {},
+    onOpenMeetingRecorder: () -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -603,6 +604,15 @@ fun ReaderScreen(
                                     onClick = {
                                         showOverflowMenu = false
                                         showTocDialog = true
+                                    }
+                                )
+
+                                DropdownMenuItem(
+                                    text = { Text("Record Meeting Notes") },
+                                    leadingIcon = { Icon(Icons.Default.Mic, contentDescription = null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onOpenMeetingRecorder()
                                     }
                                 )
 

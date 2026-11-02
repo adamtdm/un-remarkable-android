@@ -20,6 +20,7 @@ import com.unremarkable.android.storage.PersistentDocumentRepository
 import com.unremarkable.android.storage.ThemeMode
 import com.unremarkable.android.ui.components.AdaptiveScaffold
 import com.unremarkable.android.ui.components.ConverterSheet
+import com.unremarkable.android.ui.components.MeetingRecorderDialog
 import com.unremarkable.android.ui.components.QuickCaptureDialog
 import com.unremarkable.android.ui.screens.OnboardingScreen
 import com.unremarkable.android.ui.screens.SettingsScreen
@@ -89,6 +90,7 @@ class MainActivity : ComponentActivity() {
                 var pairingError by remember { mutableStateOf<String?>(null) }
 
                 var showQuickCapture by remember { mutableStateOf(false) }
+                var showMeetingRecorder by remember { mutableStateOf(false) }
                 var showConverterSheet by remember { mutableStateOf(false) }
                 var converterFileName by remember { mutableStateOf("Shared Document.cbz") }
                 var isConverting by remember { mutableStateOf(false) }
@@ -224,6 +226,7 @@ class MainActivity : ComponentActivity() {
                                     showConverterSheet = true
                                 },
                                 onOpenSettings = { showSettings = true },
+                                onOpenMeetingRecorder = { showMeetingRecorder = true },
                                 selectedDocument = selectedDocument,
                                 onSelectDocument = { selectedDocument = it },
                                 blobStore = blobStore,
@@ -257,6 +260,19 @@ class MainActivity : ComponentActivity() {
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
+                        )
+                    }
+
+                    // Meeting Recorder & Live Transcription Dialog
+                    if (showMeetingRecorder) {
+                        MeetingRecorderDialog(
+                            repository = repository,
+                            blobStore = blobStore,
+                            onNotebookCreated = { notebook ->
+                                documents = repository.getAllDocuments()
+                                selectedDocument = notebook
+                            },
+                            onDismiss = { showMeetingRecorder = false }
                         )
                     }
 
