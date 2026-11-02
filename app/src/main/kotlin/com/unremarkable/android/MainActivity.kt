@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -187,6 +188,13 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                BackHandler(enabled = showSettings) {
+                    showSettings = false
+                }
+                BackHandler(enabled = selectedDocument != null) {
+                    selectedDocument = null
+                }
+
                 Surface(modifier = Modifier.fillMaxSize()) {
                     when {
                         showOnboarding -> {
@@ -296,7 +304,9 @@ class MainActivity : ComponentActivity() {
                                 onSelectDocument = { selectedDocument = it },
                                 blobStore = blobStore,
                                 annotationStore = annotationStore,
-                                cloudClient = cloudClient
+                                cloudClient = cloudClient,
+                                initialIsSidebarMinimized = appSettings.isSidebarMinimized,
+                                onSidebarMinimizedChanged = { isMin -> appSettings.isSidebarMinimized = isMin }
                             )
                         }
                     }

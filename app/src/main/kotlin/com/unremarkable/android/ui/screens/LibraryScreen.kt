@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -18,21 +19,27 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.automirrored.filled.ViewSidebar
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -80,7 +87,9 @@ fun LibraryScreen(
     currentFolderId: String = "",
     blobStore: BlobStore? = null,
     isFoldable: Boolean = false,
+    focusSearchTrigger: Long = 0L,
     onMinimizeSidebar: () -> Unit = {},
+    onGoHome: () -> Unit = {},
     onOpenDocument: (DocumentItem) -> Unit,
     onOpenFolder: (String) -> Unit,
     onSyncNow: () -> Unit,
@@ -96,6 +105,13 @@ fun LibraryScreen(
     var viewMode by remember { mutableStateOf(LibraryViewMode.LIST) }
     var showSortMenu by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
+
+    val searchFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(focusSearchTrigger) {
+        if (focusSearchTrigger > 0L) {
+            searchFocusRequester.requestFocus()
+        }
+    }
 
     val docsById = remember(documents) { documents.associateBy { it.id } }
     val parentFolderId = remember(docsById, currentFolderId) {
@@ -181,7 +197,15 @@ fun LibraryScreen(
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                searchQuery = ""
+                                selectedFilter = DocumentFilter.ALL
+                                onOpenFolder("")
+                                onGoHome()
+                            }
+                            .padding(horizontal = 4.dp, vertical = 4.dp)
                     ) {
                         Image(
                             painter = painterResource(id = R.drawable.ic_ur_logo),
@@ -277,7 +301,10 @@ fun LibraryScreen(
                         textStyle = MaterialTheme.typography.bodyMedium.copy(
                             color = MaterialTheme.colorScheme.onSurface
                         ),
-                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(searchFocusRequester),
                         decorationBox = { innerTextField ->
                             if (searchQuery.isEmpty()) {
                                 Text(
@@ -495,75 +522,137 @@ fun LibraryScreen(
                 }
             }
 
-            // Main Document List or Grid
-            if (filteredDocs.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(32.dp)
+            val (folders, nonFolders) = remember(filteredDocs) {
+                filteredDocs.partition { it.isFolder }
+            }
+
+            // Main Document List or Grid with Pull-to-Refresh
+            PullToRefreshBox(
+                isRefreshing = isSyncing,
+                onRefresh = onSyncNow,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                if (filteredDocs.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Description,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                            modifier = Modifier.size(52.dp)
-                        )
-                        Text(
-                            text = if (searchQuery.isNotBlank()) "No matching notes or documents" else "Folder is empty",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = "Tap + to create a note, record a meeting, or optimize a document",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Description,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                                modifier = Modifier.size(52.dp)
+                            )
+                            Text(
+                                text = if (searchQuery.isNotBlank()) "No matching notes or documents" else "Folder is empty",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Tap + to create a note, record a meeting, or optimize a document",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
-                }
-            } else if (viewMode == LibraryViewMode.GRID) {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 140.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(filteredDocs, key = { it.id }) { doc ->
-                        DocumentGridCard(
-                            document = doc,
-                            blobStore = blobStore,
-                            onClick = {
-                                if (doc.isFolder) onOpenFolder(doc.id) else onOpenDocument(doc)
+                } else if (viewMode == LibraryViewMode.GRID) {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 140.dp),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (folders.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                SectionHeader(title = "Folders", count = folders.size)
                             }
-                        )
+                            items(folders, key = { it.id }) { folder ->
+                                FolderGridCard(
+                                    folder = folder,
+                                    allDocuments = documents,
+                                    onClick = { onOpenFolder(folder.id) }
+                                )
+                            }
+                        }
+                        if (nonFolders.isNotEmpty()) {
+                            if (folders.isNotEmpty()) {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    SectionHeader(
+                                        title = if (currentFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
+                                        count = nonFolders.size
+                                    )
+                                }
+                            }
+                            items(nonFolders, key = { it.id }) { doc ->
+                                DocumentGridCard(
+                                    document = doc,
+                                    blobStore = blobStore,
+                                    onClick = { onOpenDocument(doc) }
+                                )
+                            }
+                        }
                     }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(filteredDocs, key = { it.id }) { doc ->
-                        DocumentCard(
-                            document = doc,
-                            blobStore = blobStore,
-                            onClick = {
-                                if (doc.isFolder) onOpenFolder(doc.id) else onOpenDocument(doc)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (folders.isNotEmpty()) {
+                            item {
+                                SectionHeader(title = "Folders", count = folders.size)
                             }
-                        )
+                            val folderPairs = folders.chunked(2)
+                            items(folderPairs) { pair ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    FolderGridCard(
+                                        folder = pair[0],
+                                        allDocuments = documents,
+                                        onClick = { onOpenFolder(pair[0].id) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (pair.size > 1) {
+                                        FolderGridCard(
+                                            folder = pair[1],
+                                            allDocuments = documents,
+                                            onClick = { onOpenFolder(pair[1].id) },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    } else {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                            if (nonFolders.isNotEmpty()) {
+                                item {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    SectionHeader(
+                                        title = if (currentFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
+                                        count = nonFolders.size
+                                    )
+                                }
+                            }
+                        }
+                        items(nonFolders, key = { it.id }) { doc ->
+                            DocumentCard(
+                                document = doc,
+                                blobStore = blobStore,
+                                onClick = { onOpenDocument(doc) }
+                            )
+                        }
                     }
                 }
             }
@@ -687,6 +776,133 @@ fun LibraryScreen(
                             Text("Convert PDF, CBZ or image to Paper Pro / RM2 format", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(
+    title: String,
+    count: Int,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title.uppercase(Locale.US),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp,
+                fontSize = 11.sp
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "$count ${if (count == 1) "item" else "items"}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+        )
+    }
+}
+
+@Composable
+fun FolderGridCard(
+    folder: DocumentItem,
+    allDocuments: List<DocumentItem>,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val childCount = remember(folder.id, allDocuments) {
+        allDocuments.count { it.parent == folder.id && it.parent != "trash" }
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Column {
+            // Folder Thumbnail Box (16:10 aspect ratio matching container app .doc-card-folder)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1.6f)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                            )
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.size(52.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+                }
+            }
+
+            // Folder Title & Meta Body (.doc-card-body)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = folder.visibleName,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(4.dp),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
+                    ) {
+                        Text(
+                            text = "FOLDER",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.5.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
+                    }
+                    Text(
+                        text = if (childCount == 0) "Empty" else "$childCount ${if (childCount == 1) "item" else "items"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

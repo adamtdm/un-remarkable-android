@@ -37,4 +37,10 @@ class AppSettings(context: Context) {
         set(value) {
             prefs.edit().putBoolean("auto_sync", value).apply()
         }
+
+    var isSidebarMinimized: Boolean
+        get() = prefs.getBoolean("sidebar_minimized", false)
+        set(value) {
+            prefs.edit().putBoolean("sidebar_minimized", value).apply()
+        }
 }
