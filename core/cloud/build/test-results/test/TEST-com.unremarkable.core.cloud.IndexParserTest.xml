@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.unremarkable.core.cloud.IndexParserTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-02T09:37:31" hostname="pop-os" time="0.024">
+  <properties/>
+  <testcase name="parse schema 3 index()" classname="com.unremarkable.core.cloud.IndexParserTest" time="0.005"/>
+  <testcase name="empty index throws exception()" classname="com.unremarkable.core.cloud.IndexParserTest" time="0.002"/>
+  <testcase name="parse and format schema 4 index()" classname="com.unremarkable.core.cloud.IndexParserTest" time="0.013"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
