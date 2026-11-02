@@ -15,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -55,6 +56,12 @@ import com.unremarkable.android.render.PdfOutlineParser
 import com.unremarkable.android.render.RmPageCanvasRenderer
 import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.ui.components.*
+import com.unremarkable.android.ui.theme.BasaltBgPrimary
+import com.unremarkable.android.ui.theme.BasaltBgSecondary
+import com.unremarkable.android.ui.theme.BasaltBgTertiary
+import com.unremarkable.android.ui.theme.BasaltBorder
+import com.unremarkable.android.ui.theme.PaperBgPrimary
+import com.unremarkable.android.ui.theme.PaperBorder
 import com.unremarkable.android.ui.theme.Zinc800
 import com.unremarkable.android.ui.theme.Zinc900
 import com.unremarkable.core.cloud.BlobStore
@@ -94,7 +101,15 @@ fun ReaderScreen(
     var totalPages by remember(document.id) {
         mutableIntStateOf(maxOf(document.pages.size, document.pageCount, 1))
     }
-    var isDarkMode by remember { mutableStateOf(false) }
+
+    val isAppDark = isSystemInDarkTheme() || MaterialTheme.colorScheme.background == BasaltBgPrimary
+    val isComic = remember(document) {
+        document.tags.any { it.equals("Comic", ignoreCase = true) || it.equals("Optimized", ignoreCase = true) } ||
+            document.visibleName.endsWith(".cbz", ignoreCase = true) ||
+            document.visibleName.contains("comic", ignoreCase = true)
+    }
+
+    var isDarkMode by remember(document.id) { mutableStateOf(isAppDark) }
     var fitMode by remember { mutableStateOf(FitMode.FIT_PAGE) }
     var isHudVisible by remember { mutableStateOf(true) }
     var isDrawingMode by remember { mutableStateOf(false) }
@@ -282,10 +297,11 @@ fun ReaderScreen(
             when {
                 hasPdfBacking -> {
                     val rawPdfBmp = renderer!!.renderPage(rawPdfIdx, 1404, 1872)
-                    val outBmp = if (isDarkMode || rmPage != null) {
+                    val shouldInvertColors = isDarkMode && !isComic
+                    val outBmp = if (shouldInvertColors || rmPage != null) {
                         val mutable = Bitmap.createBitmap(rawPdfBmp.width, rawPdfBmp.height, Bitmap.Config.ARGB_8888)
                         val canvas = Canvas(mutable)
-                        val pdfPaint = if (isDarkMode) {
+                        val pdfPaint = if (shouldInvertColors) {
                             Paint().apply {
                                 colorFilter = ColorMatrixColorFilter(
                                     ColorMatrix(
@@ -362,7 +378,8 @@ fun ReaderScreen(
         onDispose { activeRenderer?.close() }
     }
 
-    val canvasBackground = if (isDarkMode) Zinc900 else Color(0xFFF4F4F5)
+    val isDarkView = isDarkMode || isAppDark
+    val canvasBackground = if (isDarkView) BasaltBgPrimary else PaperBgPrimary
     val swipeThresholdPx = with(density) { 64.dp.toPx() }
     val pageStep = if (isDualPageMode) 2 else 1
 
@@ -465,7 +482,7 @@ fun ReaderScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(if (isFullscreen) 2.dp else 10.dp)
+                .padding(if (isFullscreen || isDarkView) 0.dp else 8.dp)
                 .graphicsLayer {
                     scaleX = zoomScale
                     scaleY = zoomScale
@@ -536,7 +553,7 @@ fun ReaderScreen(
                             modifier = Modifier
                                 .width(2.dp)
                                 .fillMaxHeight(0.96f)
-                                .background(if (isDarkMode) Zinc800 else Color(0xFFD4D4D8))
+                                .background(if (isDarkView) BasaltBgTertiary else Color(0xFFD4D4D8))
                         )
                         ReaderPageCard(
                             bitmap = rightBitmap,
@@ -932,11 +949,14 @@ private fun ReaderPageCard(
         if (fitWidth) scrollState.scrollTo(0)
     }
 
+    val cardBg = if (isDarkMode) BasaltBgPrimary else Color.White
+    val cardBorder = if (isDarkMode) null else BorderStroke(1.dp, PaperBorder)
+
     Surface(
-        color = if (isDarkMode) Zinc900 else Color.White,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, if (isDarkMode) Zinc800 else Color(0xFFE4E4E7)),
-        shadowElevation = 3.dp,
+        color = cardBg,
+        shape = if (isDarkMode) RoundedCornerShape(0.dp) else RoundedCornerShape(6.dp),
+        border = cardBorder,
+        shadowElevation = if (isDarkMode) 0.dp else 2.dp,
         modifier = modifier
     ) {
         val innerMod = if (fitWidth && !isDrawingMode) {
@@ -945,7 +965,10 @@ private fun ReaderPageCard(
             Modifier.fillMaxSize()
         }
 
-        Box(modifier = innerMod, contentAlignment = Alignment.Center) {
+        Box(
+            modifier = innerMod.background(cardBg),
+            contentAlignment = Alignment.Center
+        ) {
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
@@ -954,7 +977,10 @@ private fun ReaderPageCard(
                     modifier = if (fitWidth) Modifier.fillMaxWidth() else Modifier.fillMaxSize()
                 )
             } else {
-                CircularProgressIndicator(modifier = Modifier.size(30.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(30.dp),
+                    color = if (isDarkMode) Color.White else MaterialTheme.colorScheme.primary
+                )
             }
 
             DrawingCanvas(
