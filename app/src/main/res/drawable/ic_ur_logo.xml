@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Deep Black Squircle Background -->
+    <path
+        android:fillColor="#09090B"
+        android:pathData="M0,26 C0,11.64 11.64,0 26,0 L82,0 C96.36,0 108,11.64 108,26 L108,82 C108,96.36 96.36,108 82,108 L26,108 C11.64,108 0,96.36 0,82 Z" />
+
+    <!-- Pure White "UR" Continuous Monogram -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M32,34 L32,58 C32,68 40,75 43,75 C46,75 54,68 54,58 L54,34 L65,34 C73,34 76,39 76,44.5 C76,50 73,55 65,55 L54,55" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M63,55 L76,74" />
+</vector>
