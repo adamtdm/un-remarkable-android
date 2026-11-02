@@ -29,6 +29,7 @@ fun SettingsScreen(
     onUnpairAccount: () -> Unit,
     onForceResync: () -> Unit,
     onClearCache: () -> Unit,
+    onThemeChanged: (ThemeMode) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showUnpairDialog by remember { mutableStateOf(false) }
@@ -121,6 +122,7 @@ fun SettingsScreen(
                             onClick = {
                                 currentTheme = ThemeMode.SYSTEM
                                 appSettings.themeMode = ThemeMode.SYSTEM
+                                onThemeChanged(ThemeMode.SYSTEM)
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3)
                         ) {
@@ -131,6 +133,7 @@ fun SettingsScreen(
                             onClick = {
                                 currentTheme = ThemeMode.DARK
                                 appSettings.themeMode = ThemeMode.DARK
+                                onThemeChanged(ThemeMode.DARK)
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3)
                         ) {
@@ -141,6 +144,7 @@ fun SettingsScreen(
                             onClick = {
                                 currentTheme = ThemeMode.LIGHT
                                 appSettings.themeMode = ThemeMode.LIGHT
+                                onThemeChanged(ThemeMode.LIGHT)
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3)
                         ) {
@@ -278,7 +282,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showUnpairDialog = false },
             title = { Text("Unpair Account?") },
-            text = { Text("This will remove your device token. Your cached files will remain until cleared.") },
+            text = { Text("This will unlink your device token and clear your local library and cached files.") },
             confirmButton = {
                 TextButton(
                     onClick = {

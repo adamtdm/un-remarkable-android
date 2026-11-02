@@ -161,6 +161,7 @@ class MainActivity : ComponentActivity() {
                                 totalCacheSizeMb = blobStore.totalSizeBytes() / (1024f * 1024f),
                                 cachedBlobCount = blobStore.blobCount(),
                                 appSettings = appSettings,
+                                onThemeChanged = { themeModeState = it },
                                 onBack = {
                                     themeModeState = appSettings.themeMode
                                     showSettings = false

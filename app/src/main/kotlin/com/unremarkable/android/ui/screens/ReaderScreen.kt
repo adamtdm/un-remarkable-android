@@ -44,7 +44,8 @@ fun ReaderScreen(
     var isHudVisible by remember { mutableStateOf(true) }
     var isDrawingMode by remember { mutableStateOf(false) }
     var showFavoritesShelf by remember { mutableStateOf(false) }
-    var strokes by remember { mutableStateOf<List<DrawnStroke>>(emptyList()) }
+    var pageStrokesMap by remember(document.id) { mutableStateOf<Map<Int, List<DrawnStroke>>>(emptyMap()) }
+    val currentStrokes = pageStrokesMap[currentPage].orEmpty()
 
     // Auto-hide HUD after 3.5 seconds unless drawing mode is active
     LaunchedEffect(isHudVisible, isDrawingMode) {
@@ -157,8 +158,10 @@ fun ReaderScreen(
                     DrawingCanvas(
                         isDarkMode = isDarkMode,
                         isDrawingEnabled = isDrawingMode,
-                        strokes = strokes,
-                        onStrokesChanged = { strokes = it },
+                        strokes = currentStrokes,
+                        onStrokesChanged = { updatedList ->
+                            pageStrokesMap = pageStrokesMap + (currentPage to updatedList)
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }

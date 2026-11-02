@@ -27,13 +27,53 @@ import com.unremarkable.core.render.PenColor
 import com.unremarkable.core.render.RmPalette
 import com.unremarkable.core.render.ToolType
 
-data class DrawnStroke(
-    val path: List<Offset>,
+class DrawnStroke(
+    val points: List<Offset>,
     val tool: ToolType,
     val color: PenColor,
     val strokeWidth: Float,
     val opacity: Float = 1.0f
-)
+) {
+    val path: Path = Path().apply {
+        if (points.isNotEmpty()) {
+            moveTo(points.first().x, points.first().y)
+            for (i in 1 until points.size) {
+                lineTo(points[i].x, points[i].y)
+            }
+        }
+    }
+
+    private val minX: Float = points.minOfOrNull { it.x } ?: 0f
+    private val maxX: Float = points.maxOfOrNull { it.x } ?: 0f
+    private val minY: Float = points.minOfOrNull { it.y } ?: 0f
+    private val maxY: Float = points.maxOfOrNull { it.y } ?: 0f
+
+    fun intersects(eraserPoints: List<Offset>, threshold: Float): Boolean {
+        if (points.isEmpty() || eraserPoints.isEmpty()) return false
+
+        val eMinX = eraserPoints.minOfOrNull { it.x } ?: return false
+        val eMaxX = eraserPoints.maxOfOrNull { it.x } ?: return false
+        val eMinY = eraserPoints.minOfOrNull { it.y } ?: return false
+        val eMaxY = eraserPoints.maxOfOrNull { it.y } ?: return false
+
+        // Bounding box test
+        if (eMaxX < minX - threshold || eMinX > maxX + threshold ||
+            eMaxY < minY - threshold || eMinY > maxY + threshold
+        ) {
+            return false
+        }
+
+        val threshSq = threshold * threshold
+        for (pt in points) {
+            for (e in eraserPoints) {
+                val dx = e.x - pt.x
+                val dy = e.y - pt.y
+                if (dx * dx + dy * dy <= threshSq) return true
+            }
+        }
+        return false
+    }
+}
 
 @Composable
 fun DrawingCanvas(
@@ -45,8 +85,12 @@ fun DrawingCanvas(
 ) {
     var activeTool by remember { mutableStateOf(ToolType.FINELINER) }
     var activeColor by remember { mutableStateOf(PenColor.BLACK) }
-    var currentPath by remember { mutableStateOf<List<Offset>>(emptyList()) }
     var undoStack by remember { mutableStateOf<List<List<DrawnStroke>>>(emptyList()) }
+
+    // Live stroke state during active touch drag
+    val livePoints = remember { mutableStateListOf<Offset>() }
+    val livePath = remember { Path() }
+    var liveTick by remember { mutableIntStateOf(0) }
 
     val currentColorRgba = RmPalette.getColor(activeColor.value, isDarkMode)
     val strokeColor = Color(currentColorRgba.r, currentColorRgba.g, currentColorRgba.b)
@@ -56,19 +100,25 @@ fun DrawingCanvas(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(isDrawingEnabled, activeTool, activeColor) {
+                .pointerInput(isDrawingEnabled, activeTool, activeColor, strokes) {
                     if (!isDrawingEnabled) return@pointerInput
 
                     detectDragGestures(
                         onDragStart = { offset ->
-                            currentPath = listOf(offset)
+                            livePoints.clear()
+                            livePoints.add(offset)
+                            livePath.reset()
+                            livePath.moveTo(offset.x, offset.y)
+                            liveTick++
                         },
                         onDrag = { change, _ ->
                             change.consume()
-                            currentPath = currentPath + change.position
+                            livePoints.add(change.position)
+                            livePath.lineTo(change.position.x, change.position.y)
+                            liveTick++
                         },
                         onDragEnd = {
-                            if (currentPath.isNotEmpty()) {
+                            if (livePoints.isNotEmpty()) {
                                 val width = when (activeTool) {
                                     ToolType.HIGHLIGHTER -> 28f
                                     ToolType.MARKER -> 10f
@@ -81,17 +131,15 @@ fun DrawingCanvas(
 
                                 undoStack = undoStack + listOf(strokes)
                                 if (activeTool == ToolType.ERASER) {
-                                    // Remove strokes touched by eraser
-                                    val eraserPoints = currentPath
+                                    // Remove strokes touched by eraser with bounding box acceleration
+                                    val eraserPoints = livePoints.toList()
                                     val remaining = strokes.filterNot { stroke ->
-                                        stroke.path.any { pt ->
-                                            eraserPoints.any { e -> (e - pt).getDistance() < 30f }
-                                        }
+                                        stroke.intersects(eraserPoints, 32f)
                                     }
                                     onStrokesChanged(remaining)
                                 } else {
                                     val newStroke = DrawnStroke(
-                                        path = currentPath,
+                                        points = livePoints.toList(),
                                         tool = activeTool,
                                         color = activeColor,
                                         strokeWidth = width,
@@ -99,25 +147,25 @@ fun DrawingCanvas(
                                     )
                                     onStrokesChanged(strokes + newStroke)
                                 }
-                                currentPath = emptyList()
+                                livePoints.clear()
+                                livePath.reset()
+                                liveTick++
                             }
                         }
                     )
                 }
         ) {
-            // Render existing strokes
+            // Reference liveTick so Canvas recomposes when dragging
+            @Suppress("UNUSED_VARIABLE")
+            val tick = liveTick
+
+            // Render existing strokes (using cached Path instances)
             for (stroke in strokes) {
-                if (stroke.path.size < 2) continue
+                if (stroke.points.size < 2) continue
                 val strokeRgba = RmPalette.getColor(stroke.color.value, isDarkMode)
                 val c = Color(strokeRgba.r, strokeRgba.g, strokeRgba.b).copy(alpha = stroke.opacity)
-                val p = Path().apply {
-                    moveTo(stroke.path.first().x, stroke.path.first().y)
-                    for (i in 1 until stroke.path.size) {
-                        lineTo(stroke.path[i].x, stroke.path[i].y)
-                    }
-                }
                 drawPath(
-                    path = p,
+                    path = stroke.path,
                     color = c,
                     style = CanvasStroke(
                         width = stroke.strokeWidth,
@@ -128,25 +176,27 @@ fun DrawingCanvas(
                 )
             }
 
-            // Render current drawing path
-            if (currentPath.size >= 2) {
+            // Render live dragging stroke
+            if (livePoints.size >= 2) {
                 val c = if (activeTool == ToolType.ERASER) {
                     Color.Gray.copy(alpha = 0.3f)
                 } else {
                     strokeColor.copy(alpha = if (activeTool == ToolType.HIGHLIGHTER) 0.4f else 1.0f)
                 }
-                val p = Path().apply {
-                    moveTo(currentPath.first().x, currentPath.first().y)
-                    for (i in 1 until currentPath.size) {
-                        lineTo(currentPath[i].x, currentPath[i].y)
-                    }
+                val width = when (activeTool) {
+                    ToolType.HIGHLIGHTER -> 28f
+                    ToolType.MARKER -> 10f
+                    ToolType.FINELINER -> 4f
+                    ToolType.PENCIL -> 3f
+                    ToolType.ERASER -> 36f
+                    else -> 5f
                 }
                 drawPath(
-                    path = p,
+                    path = livePath,
                     color = c,
                     style = CanvasStroke(
-                        width = if (activeTool == ToolType.HIGHLIGHTER) 28f else if (activeTool == ToolType.ERASER) 36f else 5f,
-                        cap = StrokeCap.Round,
+                        width = width,
+                        cap = if (activeTool == ToolType.HIGHLIGHTER) StrokeCap.Square else StrokeCap.Round,
                         join = StrokeJoin.Round
                     )
                 )
@@ -180,6 +230,15 @@ fun DrawingCanvas(
                     }
 
                     IconButton(
+                        onClick = { activeTool = ToolType.MARKER },
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = if (activeTool == ToolType.MARKER) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                        )
+                    ) {
+                        Icon(Icons.Default.Brush, contentDescription = "Marker", modifier = Modifier.size(20.dp))
+                    }
+
+                    IconButton(
                         onClick = { activeTool = ToolType.HIGHLIGHTER },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (activeTool == ToolType.HIGHLIGHTER) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
@@ -206,37 +265,42 @@ fun DrawingCanvas(
                         Icon(Icons.Default.CleaningServices, contentDescription = "Eraser", modifier = Modifier.size(20.dp))
                     }
 
-                    VerticalDivider(modifier = Modifier.height(28.dp))
+                    VerticalDivider(modifier = Modifier.height(24.dp))
 
-                    // Color Picker Pills
-                    val colors = listOf(PenColor.BLACK, PenColor.BLUE, PenColor.RED, PenColor.YELLOW, PenColor.GREEN)
-                    for (c in colors) {
-                        val cRgba = RmPalette.getColor(c.value, isDarkMode)
-                        val composeCol = Color(cRgba.r, cRgba.g, cRgba.b)
-                        Box(
-                            modifier = Modifier
-                                .size(if (activeColor == c) 24.dp else 18.dp)
-                                .background(composeCol, CircleShape)
-                                .pointerInput(Unit) {
-                                    detectDragGestures { _, _ -> }
-                                }
-                        )
+                    // Color Pickers
+                    val colors = listOf(PenColor.BLACK, PenColor.GRAY, PenColor.RED, PenColor.BLUE)
+                    for (color in colors) {
+                        val rgba = RmPalette.getColor(color.value, isDarkMode)
+                        val c = Color(rgba.r, rgba.g, rgba.b)
+                        IconButton(
+                            onClick = { activeColor = color },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Surface(
+                                color = c,
+                                shape = CircleShape,
+                                border = if (activeColor == color) {
+                                    androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                                } else null,
+                                modifier = Modifier.size(20.dp)
+                            ) {}
+                        }
                     }
 
-                    VerticalDivider(modifier = Modifier.height(28.dp))
+                    VerticalDivider(modifier = Modifier.height(24.dp))
 
-                    // Undo
+                    // Undo Button
                     IconButton(
                         onClick = {
                             if (undoStack.isNotEmpty()) {
-                                val prev = undoStack.last()
+                                val previousState = undoStack.last()
                                 undoStack = undoStack.dropLast(1)
-                                onStrokesChanged(prev)
+                                onStrokesChanged(previousState)
                             }
                         },
                         enabled = undoStack.isNotEmpty()
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo", modifier = Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
                     }
                 }
             }

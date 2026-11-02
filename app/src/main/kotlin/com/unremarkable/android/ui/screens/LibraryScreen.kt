@@ -49,7 +49,19 @@ fun LibraryScreen(
     var selectedFilter by remember { mutableStateOf(DocumentFilter.ALL) }
 
     val filteredDocs = remember(documents, searchQuery, currentFolderId, selectedFilter) {
-        val baseList = if (searchQuery.isBlank()) {
+        val baseList = if (selectedFilter == DocumentFilter.PINNED) {
+            // Pinned shows all starred documents across the entire library, matching reMarkable OS
+            if (searchQuery.isBlank()) {
+                documents.filter { it.pinned }
+            } else {
+                documents.filter {
+                    it.pinned && (
+                        it.visibleName.contains(searchQuery, ignoreCase = true) ||
+                        it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
+                    )
+                }
+            }
+        } else if (searchQuery.isBlank()) {
             documents.filter { it.parent == currentFolderId }
         } else {
             documents.filter {
@@ -60,10 +72,10 @@ fun LibraryScreen(
 
         val filtered = when (selectedFilter) {
             DocumentFilter.ALL -> baseList
+            DocumentFilter.PINNED -> baseList
             DocumentFilter.NOTEBOOKS -> baseList.filter { !it.isFolder && (it.fileType.isBlank() || it.fileType == "notebook" || it.tags.contains("Note") || it.tags.contains("Task")) }
             DocumentFilter.PDFS -> baseList.filter { !it.isFolder && (it.fileType == "pdf" || it.visibleName.endsWith(".pdf", ignoreCase = true)) }
             DocumentFilter.COMICS -> baseList.filter { !it.isFolder && (it.tags.contains("Comic") || it.tags.contains("Optimized")) }
-            DocumentFilter.PINNED -> baseList.filter { it.pinned }
         }
 
         // Folders first, then pinned, then by date

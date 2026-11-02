@@ -238,8 +238,8 @@ fun AdaptiveScaffold(
                     }
                 }
 
-                // If in fullscreen, floating pill to restore sidebar
-                if (sidebarMode == SidebarMode.FULLSCREEN) {
+                // If in fullscreen on placeholder screen, floating pill to restore sidebar
+                if (sidebarMode == SidebarMode.FULLSCREEN && selectedDocument == null) {
                     FloatingActionButton(
                         onClick = { sidebarMode = SidebarMode.EXPANDED },
                         modifier = Modifier
