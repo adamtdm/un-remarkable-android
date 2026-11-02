@@ -24,7 +24,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -80,6 +80,14 @@ import kotlin.math.abs
 
 private enum class FitMode { FIT_PAGE, FIT_WIDTH }
 
+private class RenderedSpread(
+    val docId: String,
+    val leftPage: Int,
+    val rightPage: Int?,
+    val leftBitmap: Bitmap?,
+    val rightBitmap: Bitmap?
+)
+
 @Composable
 fun ReaderScreen(
     document: DocumentItem,
@@ -134,9 +142,9 @@ fun ReaderScreen(
     var isDrawingMode by remember { mutableStateOf(false) }
     var isDualPageMode by remember { mutableStateOf(false) }
 
-    // Pinch-to-Zoom & Pan state (matches Docker viewer 1x..4.5x + focal pan + double-tap 2.2x)
-    var zoomScale by remember(document.id, currentPage, fitMode, isDualPageMode) { mutableFloatStateOf(1f) }
-    var panOffset by remember(document.id, currentPage, fitMode, isDualPageMode) { mutableStateOf(Offset.Zero) }
+    // Pinch-to-Zoom & Pan state (reset atomically with renderedSpread so old page never jumps before swap)
+    var zoomScale by remember(document.id) { mutableFloatStateOf(1f) }
+    var panOffset by remember(document.id) { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
 
     fun resetZoom() {
@@ -219,8 +227,13 @@ fun ReaderScreen(
     var loadError by remember(document.id) { mutableStateOf<String?>(null) }
     var retryToken by remember { mutableIntStateOf(0) }
 
-    var leftBitmap by remember(document.id) { mutableStateOf<Bitmap?>(null) }
-    var rightBitmap by remember(document.id) { mutableStateOf<Bitmap?>(null) }
+    var renderedSpread by remember(document.id) {
+        mutableStateOf(RenderedSpread(document.id, 1, null, null, null))
+    }
+    val displayedLeftPage = renderedSpread.leftPage
+    val displayedRightPage = renderedSpread.rightPage
+    val leftBitmap = renderedSpread.leftBitmap
+    val rightBitmap = renderedSpread.rightBitmap
     var isPageRendering by remember(document.id) { mutableStateOf(false) }
 
     // Download & open base PDF or EPUB container on-demand
@@ -370,8 +383,22 @@ fun ReaderScreen(
     LaunchedEffect(document.id, leftPage, rightPage, pdfRenderer, epubPages, isLoadingFile, isAppDark, userInvertOverride, retryToken) {
         if (isLoadingFile) return@LaunchedEffect
         isPageRendering = true
-        leftBitmap = loadCompositePage(leftPage)
-        rightBitmap = rightPage?.let { loadCompositePage(it) }
+        val nextLeft = loadCompositePage(leftPage)
+        val nextRight = rightPage?.let { loadCompositePage(it) }
+        val pageChanged = renderedSpread.docId != document.id ||
+            renderedSpread.leftPage != leftPage ||
+            renderedSpread.rightPage != rightPage
+        if (pageChanged) {
+            zoomScale = 1f
+            panOffset = Offset.Zero
+        }
+        renderedSpread = RenderedSpread(
+            docId = document.id,
+            leftPage = leftPage,
+            rightPage = rightPage,
+            leftBitmap = nextLeft,
+            rightBitmap = nextRight
+        )
         isPageRendering = false
 
         // Background prefetch adjacent .rm blobs (matching Docker preloadAdjacentPages)
@@ -416,7 +443,7 @@ fun ReaderScreen(
             .background(canvasBackground)
             .onSizeChanged { viewportSize = it }
             // Pinch-to-zoom, focal pan when zoomed, and horizontal swipe page turn at 1x
-            .pointerInput(isDrawingMode, fitMode, isDualPageMode, totalPages) {
+            .pointerInput(document.id, isDrawingMode, fitMode, isDualPageMode, totalPages) {
                 if (isDrawingMode) return@pointerInput
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -472,7 +499,7 @@ fun ReaderScreen(
                 }
             }
             // Double-tap 2.25x zoom toggle + edge-tap page turns (disabled while zoomed)
-            .pointerInput(isDrawingMode, isDualPageMode, totalPages) {
+            .pointerInput(document.id, isDrawingMode, isDualPageMode, totalPages) {
                 if (isDrawingMode) return@pointerInput
                 detectTapGestures(
                     onDoubleTap = { tapOffset ->
@@ -557,23 +584,24 @@ fun ReaderScreen(
                     }
                 }
 
-                isDualPageMode && rightPage != null -> {
+                isDualPageMode && displayedRightPage != null -> {
                     Row(
                         modifier = Modifier.fillMaxSize(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         ReaderPageCard(
+                            documentId = document.id,
                             bitmap = leftBitmap,
-                            pageNum = leftPage,
+                            pageNum = displayedLeftPage,
                             isPageInverted = effectiveInvert,
                             isStageDark = isDarkView,
                             fitWidth = false,
                             isDrawingMode = isDrawingMode,
-                            strokes = pageStrokesMap[leftPage].orEmpty(),
+                            strokes = pageStrokesMap[displayedLeftPage].orEmpty(),
                             onStrokesChanged = { updated ->
-                                pageStrokesMap = pageStrokesMap + (leftPage to updated)
-                                annotationStore?.saveStrokes(document.id, leftPage, updated)
+                                pageStrokesMap = pageStrokesMap + (displayedLeftPage to updated)
+                                annotationStore?.saveStrokes(document.id, displayedLeftPage, updated)
                             },
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
@@ -584,16 +612,17 @@ fun ReaderScreen(
                                 .background(if (isDarkView) BasaltBgTertiary else Color(0xFFD4D4D8))
                         )
                         ReaderPageCard(
+                            documentId = document.id,
                             bitmap = rightBitmap,
-                            pageNum = rightPage,
+                            pageNum = displayedRightPage,
                             isPageInverted = effectiveInvert,
                             isStageDark = isDarkView,
                             fitWidth = false,
                             isDrawingMode = isDrawingMode,
-                            strokes = pageStrokesMap[rightPage].orEmpty(),
+                            strokes = pageStrokesMap[displayedRightPage].orEmpty(),
                             onStrokesChanged = { updated ->
-                                pageStrokesMap = pageStrokesMap + (rightPage to updated)
-                                annotationStore?.saveStrokes(document.id, rightPage, updated)
+                                pageStrokesMap = pageStrokesMap + (displayedRightPage to updated)
+                                annotationStore?.saveStrokes(document.id, displayedRightPage, updated)
                             },
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
@@ -602,16 +631,17 @@ fun ReaderScreen(
 
                 else -> {
                     ReaderPageCard(
+                        documentId = document.id,
                         bitmap = leftBitmap,
-                        pageNum = currentPage,
+                        pageNum = displayedLeftPage,
                         isPageInverted = effectiveInvert,
                         isStageDark = isDarkView,
                         fitWidth = fitMode == FitMode.FIT_WIDTH,
                         isDrawingMode = isDrawingMode,
-                        strokes = pageStrokesMap[currentPage].orEmpty(),
+                        strokes = pageStrokesMap[displayedLeftPage].orEmpty(),
                         onStrokesChanged = { updated ->
-                            pageStrokesMap = pageStrokesMap + (currentPage to updated)
-                            annotationStore?.saveStrokes(document.id, currentPage, updated)
+                            pageStrokesMap = pageStrokesMap + (displayedLeftPage to updated)
+                            annotationStore?.saveStrokes(document.id, displayedLeftPage, updated)
                         },
                         modifier = Modifier.fillMaxSize()
                     )
@@ -771,6 +801,7 @@ fun ReaderScreen(
                                     onClick = {
                                         showOverflowMenu = false
                                         isDualPageMode = !isDualPageMode
+                                        resetZoom()
                                     }
                                 )
                                 DropdownMenuItem(
@@ -984,6 +1015,7 @@ fun ReaderScreen(
 
 @Composable
 private fun ReaderPageCard(
+    documentId: String,
     bitmap: Bitmap?,
     pageNum: Int,
     isPageInverted: Boolean,
@@ -994,10 +1026,11 @@ private fun ReaderPageCard(
     onStrokesChanged: (List<DrawnStroke>) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val scrollState = rememberScrollState()
-    LaunchedEffect(pageNum, fitWidth) {
-        if (fitWidth) scrollState.scrollTo(0)
-    }
+    // Synchronously instantiate a fresh ScrollState(0) on the exact composition frame that `pageNum`
+    // (derived from `renderedSpread.leftPage`) commits with the new bitmap — preventing both:
+    //  1) jumping the old page back to 0 while the next page is still rendering, and
+    //  2) a 1-frame post-draw flash from an asynchronous LaunchedEffect scrollTo(0).
+    val scrollState = remember(documentId, pageNum, fitWidth) { ScrollState(initial = 0) }
 
     // Outer container is strictly transparent so the dark stage (Color.Black in Dark Mode) always
     // shows cleanly behind letterbox/pillarbox regions without any white bars around the file.
