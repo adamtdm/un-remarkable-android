@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.unremarkable.core.cloud.AuthManagerTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-11-02T09:37:30" hostname="pop-os" time="0.639">
-  <properties/>
-  <testcase name="isUserTokenValid checks JWT expiration correctly()" classname="com.unremarkable.core.cloud.AuthManagerTest" time="0.407"/>
-  <testcase name="registerDevice exchanges one-time code and refreshes user token()" classname="com.unremarkable.core.cloud.AuthManagerTest" time="0.228"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

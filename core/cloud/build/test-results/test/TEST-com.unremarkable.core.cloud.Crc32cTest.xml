@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.unremarkable.core.cloud.Crc32cTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-02T09:37:31" hostname="pop-os" time="0.008">
-  <properties/>
-  <testcase name="computeBase64 formats properly for GCS header()" classname="com.unremarkable.core.cloud.Crc32cTest" time="0.002"/>
-  <testcase name="computeChecksum matches standard test vector()" classname="com.unremarkable.core.cloud.Crc32cTest" time="0.001"/>
-  <testcase name="empty input computes zero checksum()" classname="com.unremarkable.core.cloud.Crc32cTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

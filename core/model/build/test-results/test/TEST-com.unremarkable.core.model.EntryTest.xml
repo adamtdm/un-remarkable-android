@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.unremarkable.core.model.EntryTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-02T09:35:37" hostname="pop-os" time="0.145">
-  <properties/>
-  <testcase name="parseEntryLine parses file entry correctly()" classname="com.unremarkable.core.model.EntryTest" time="0.052"/>
-  <testcase name="parseEntryLine parses schema 4 entry correctly()" classname="com.unremarkable.core.model.EntryTest" time="0.027"/>
-  <testcase name="DocumentMetadata parses json correctly()" classname="com.unremarkable.core.model.EntryTest" time="0.06"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>
