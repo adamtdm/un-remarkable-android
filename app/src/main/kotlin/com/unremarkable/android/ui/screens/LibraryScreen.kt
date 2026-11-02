@@ -1,8 +1,11 @@
 package com.unremarkable.android.ui.screens
 
+import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,12 +15,18 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.unremarkable.core.model.DocumentItem
+
+enum class DocumentFilter(val label: String) {
+    ALL("All"),
+    NOTEBOOKS("Notebooks"),
+    PDFS("PDFs"),
+    COMICS("Comics"),
+    PINNED("Pinned ★")
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,17 +35,21 @@ fun LibraryScreen(
     isSyncing: Boolean = false,
     syncGeneration: Long = 0L,
     currentFolderId: String = "",
+    isFoldable: Boolean = false,
+    onMinimizeSidebar: () -> Unit = {},
     onOpenDocument: (DocumentItem) -> Unit,
     onOpenFolder: (String) -> Unit,
     onSyncNow: () -> Unit,
     onQuickCapture: () -> Unit,
     onOpenConverter: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf(DocumentFilter.ALL) }
 
-    val filteredDocs = remember(documents, searchQuery, currentFolderId) {
-        val inFolder = if (searchQuery.isBlank()) {
+    val filteredDocs = remember(documents, searchQuery, currentFolderId, selectedFilter) {
+        val baseList = if (searchQuery.isBlank()) {
             documents.filter { it.parent == currentFolderId }
         } else {
             documents.filter {
@@ -44,8 +57,17 @@ fun LibraryScreen(
                         it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
             }
         }
+
+        val filtered = when (selectedFilter) {
+            DocumentFilter.ALL -> baseList
+            DocumentFilter.NOTEBOOKS -> baseList.filter { !it.isFolder && (it.fileType.isBlank() || it.fileType == "notebook" || it.tags.contains("Note") || it.tags.contains("Task")) }
+            DocumentFilter.PDFS -> baseList.filter { !it.isFolder && (it.fileType == "pdf" || it.visibleName.endsWith(".pdf", ignoreCase = true)) }
+            DocumentFilter.COMICS -> baseList.filter { !it.isFolder && (it.tags.contains("Comic") || it.tags.contains("Optimized")) }
+            DocumentFilter.PINNED -> baseList.filter { it.pinned }
+        }
+
         // Folders first, then pinned, then by date
-        inFolder.sortedWith(
+        filtered.sortedWith(
             compareByDescending<DocumentItem> { it.isFolder }
                 .thenByDescending { it.pinned }
                 .thenByDescending { it.lastModified }
@@ -63,6 +85,11 @@ fun LibraryScreen(
                     )
                 },
                 actions = {
+                    if (isFoldable) {
+                        IconButton(onClick = onMinimizeSidebar) {
+                            Icon(Icons.Default.ViewSidebar, contentDescription = "Minimize to Rail")
+                        }
+                    }
                     IconButton(onClick = onSyncNow, enabled = !isSyncing) {
                         if (isSyncing) {
                             CircularProgressIndicator(
@@ -73,6 +100,9 @@ fun LibraryScreen(
                             Icon(Icons.Default.Sync, contentDescription = "Sync Library")
                         }
                     }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                 }
             )
         },
@@ -81,14 +111,16 @@ fun LibraryScreen(
                 SmallFloatingActionButton(
                     onClick = onOpenConverter,
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    shape = CircleShape
                 ) {
                     Icon(Icons.Default.FlashOn, contentDescription = "Optimize Document")
                 }
                 FloatingActionButton(
                     onClick = onQuickCapture,
                     containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    shape = CircleShape
                 ) {
                     Icon(Icons.Default.Add, contentDescription = "Quick Capture")
                 }
@@ -115,13 +147,29 @@ fun LibraryScreen(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
             )
 
-            // Sync Status Pill
+            // Category Filter Chips
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(DocumentFilter.entries) { filter ->
+                    FilterChip(
+                        selected = selectedFilter == filter,
+                        onClick = { selectedFilter = filter },
+                        label = { Text(filter.label, style = MaterialTheme.typography.labelSmall) },
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                }
+            }
+
+            // Sync Status Pill & Breadcrumb
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -147,22 +195,31 @@ fun LibraryScreen(
             if (filteredDocs.isEmpty()) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .fillMaxWidth()
                         .weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(32.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Description,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                            modifier = Modifier.size(64.dp)
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                            modifier = Modifier.size(56.dp)
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = if (searchQuery.isNotBlank()) "No matching documents" else "Folder is empty",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = if (searchQuery.isNotBlank()) "No matching notes or documents" else "Folder is empty",
+                            style = MaterialTheme.typography.titleSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Tap + to capture notes, or sync your reMarkable account in Settings",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
                 }
@@ -199,7 +256,11 @@ fun DocumentCard(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
@@ -213,14 +274,15 @@ fun DocumentCard(
         ) {
             Surface(
                 color = if (document.isFolder) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.size(44.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.size(46.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (document.isFolder) Icons.Default.Folder else Icons.Default.Article,
                         contentDescription = null,
-                        tint = if (document.isFolder) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+                        tint = if (document.isFolder) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
@@ -258,7 +320,7 @@ fun DocumentCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    for (tag in document.tags.take(2)) {
+                    for (tag in document.tags.take(3)) {
                         Surface(
                             color = MaterialTheme.colorScheme.surface,
                             shape = CircleShape
@@ -276,7 +338,7 @@ fun DocumentCard(
             Icon(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
             )
         }
     }

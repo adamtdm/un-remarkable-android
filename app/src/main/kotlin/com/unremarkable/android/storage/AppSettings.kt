@@ -1,0 +1,40 @@
+package com.unremarkable.android.storage
+
+import android.content.Context
+import com.unremarkable.core.model.DeviceProfile
+
+enum class ThemeMode {
+    SYSTEM, DARK, LIGHT
+}
+
+class AppSettings(context: Context) {
+    private val prefs = context.getSharedPreferences("rm_app_settings", Context.MODE_PRIVATE)
+
+    var themeMode: ThemeMode
+        get() {
+            val name = prefs.getString("theme_mode", ThemeMode.SYSTEM.name) ?: ThemeMode.SYSTEM.name
+            return try {
+                ThemeMode.valueOf(name)
+            } catch (e: Exception) {
+                ThemeMode.SYSTEM
+            }
+        }
+        set(value) {
+            prefs.edit().putString("theme_mode", value.name).apply()
+        }
+
+    var defaultDeviceProfile: DeviceProfile
+        get() {
+            val id = prefs.getString("device_profile", DeviceProfile.PAPER_PRO.id) ?: DeviceProfile.PAPER_PRO.id
+            return DeviceProfile.fromId(id)
+        }
+        set(value) {
+            prefs.edit().putString("device_profile", value.id).apply()
+        }
+
+    var autoSyncOnStart: Boolean
+        get() = prefs.getBoolean("auto_sync", true)
+        set(value) {
+            prefs.edit().putBoolean("auto_sync", value).apply()
+        }
+}

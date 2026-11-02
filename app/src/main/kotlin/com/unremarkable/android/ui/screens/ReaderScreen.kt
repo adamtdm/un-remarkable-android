@@ -2,6 +2,8 @@ package com.unremarkable.android.ui.screens
 
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -17,6 +19,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.unremarkable.android.ui.components.DrawnStroke
+import com.unremarkable.android.ui.components.DrawingCanvas
+import com.unremarkable.android.ui.components.FavoritesShelf
 import com.unremarkable.android.ui.theme.Zinc800
 import com.unremarkable.android.ui.theme.Zinc900
 import com.unremarkable.core.model.DocumentItem
@@ -25,6 +30,11 @@ import kotlinx.coroutines.delay
 @Composable
 fun ReaderScreen(
     document: DocumentItem,
+    allDocuments: List<DocumentItem> = emptyList(),
+    isFoldable: Boolean = false,
+    isFullscreen: Boolean = false,
+    onToggleFullscreen: () -> Unit = {},
+    onSelectDocument: (DocumentItem) -> Unit = {},
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -32,11 +42,14 @@ fun ReaderScreen(
     val totalPages = document.pageCount.coerceAtLeast(1)
     var isDarkMode by remember { mutableStateOf(false) }
     var isHudVisible by remember { mutableStateOf(true) }
+    var isDrawingMode by remember { mutableStateOf(false) }
+    var showFavoritesShelf by remember { mutableStateOf(false) }
+    var strokes by remember { mutableStateOf<List<DrawnStroke>>(emptyList()) }
 
-    // Auto-hide HUD after 2.5 seconds
-    LaunchedEffect(isHudVisible) {
-        if (isHudVisible) {
-            delay(2500)
+    // Auto-hide HUD after 3.5 seconds unless drawing mode is active
+    LaunchedEffect(isHudVisible, isDrawingMode) {
+        if (isHudVisible && !isDrawingMode) {
+            delay(3500)
             isHudVisible = false
         }
     }
@@ -48,72 +61,106 @@ fun ReaderScreen(
         modifier = modifier
             .fillMaxSize()
             .background(canvasBackground)
+            // Two-finger pull down gesture detector for Favorites Shelf
             .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    val screenWidth = size.width
-                    val x = offset.x
-                    when {
-                        x < screenWidth * 0.25f -> {
-                            // Left 25%: Previous page
-                            if (currentPage > 1) currentPage--
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        if (event.changes.size >= 2) {
+                            val yDeltas = event.changes.map { it.position.y - it.previousPosition.y }
+                            if (yDeltas.all { it > 18f }) {
+                                showFavoritesShelf = true
+                                event.changes.forEach { it.consume() }
+                            }
                         }
-                        x > screenWidth * 0.75f -> {
-                            // Right 25%: Next page
-                            if (currentPage < totalPages) currentPage++
-                        }
-                        else -> {
-                            // Center 50%: Toggle HUD
-                            isHudVisible = !isHudVisible
+                    } while (event.changes.any { it.pressed })
+                }
+            }
+            // Edge-tap page turn detector
+            .pointerInput(isDrawingMode) {
+                if (!isDrawingMode) {
+                    detectTapGestures { offset ->
+                        val screenWidth = size.width
+                        val x = offset.x
+                        when {
+                            x < screenWidth * 0.22f -> {
+                                if (currentPage > 1) currentPage--
+                            }
+                            x > screenWidth * 0.78f -> {
+                                if (currentPage < totalPages) currentPage++
+                            }
+                            else -> {
+                                isHudVisible = !isHudVisible
+                            }
                         }
                     }
                 }
             }
     ) {
-        // Document Content Placeholder / Render Area
+        // Document Page Content & Background
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(32.dp),
+                .padding(if (isFullscreen) 8.dp else 24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = document.visibleName,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = inkColor
-            )
-            Spacer(modifier = Modifier.height(12.dp))
             Surface(
-                color = if (isDarkMode) Zinc800 else Color(0xFFF4F4F5),
-                shape = RoundedCornerShape(16.dp),
+                color = if (isDarkMode) Zinc900 else Color(0xFFFAFAFA),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (isDarkMode) Zinc800 else Color(0xFFE4E4E7)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.EditNote,
-                            contentDescription = null,
-                            tint = inkColor.copy(alpha = 0.6f),
-                            modifier = Modifier.size(64.dp)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
+                Box(modifier = Modifier.fillMaxSize()) {
+                    // Page Template Lines & Content
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Text(
-                            text = "Page $currentPage of $totalPages",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = inkColor.copy(alpha = 0.8f)
+                            text = document.visibleName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = inkColor.copy(alpha = 0.9f)
                         )
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Simulated Lined Notebook Grid
+                        Column(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            repeat(14) {
+                                HorizontalDivider(
+                                    color = if (isDarkMode) Zinc800.copy(alpha = 0.6f) else Color(0xFFE4E4E7).copy(alpha = 0.7f),
+                                    thickness = 1.dp
+                                )
+                            }
+                        }
+
                         Text(
-                            text = if (isDarkMode) "Perceptual OKLCH Dark Mode Active" else "Paper Mode Active",
+                            text = "Page $currentPage of $totalPages • Swipe 2 fingers down for Favorites",
                             style = MaterialTheme.typography.labelSmall,
-                            color = inkColor.copy(alpha = 0.5f)
+                            color = inkColor.copy(alpha = 0.4f)
                         )
                     }
+
+                    // Interactive Drawing Layer
+                    DrawingCanvas(
+                        isDarkMode = isDarkMode,
+                        isDrawingEnabled = isDrawingMode,
+                        strokes = strokes,
+                        onStrokesChanged = { strokes = it },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
         }
@@ -126,7 +173,7 @@ fun ReaderScreen(
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
             Surface(
-                color = Zinc900.copy(alpha = 0.92f),
+                color = Zinc900.copy(alpha = 0.94f),
                 contentColor = Color.White,
                 shape = RoundedCornerShape(bottomStart = 20.dp, bottomEnd = 20.dp),
                 modifier = Modifier
@@ -140,17 +187,46 @@ fun ReaderScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                        if (isFoldable) {
+                            IconButton(onClick = onToggleFullscreen) {
+                                Icon(
+                                    imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = "Toggle Fullscreen / Sidebar"
+                                )
+                            }
+                        }
                     }
 
                     Text(
                         text = document.visibleName,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false).padding(horizontal = 8.dp)
                     )
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        // Drawing / Inking Toggle
+                        IconButton(
+                            onClick = { isDrawingMode = !isDrawingMode },
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = if (isDrawingMode) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                contentColor = if (isDrawingMode) MaterialTheme.colorScheme.onPrimaryContainer else Color.White
+                            )
+                        ) {
+                            Icon(Icons.Default.Draw, contentDescription = "Draw on file")
+                        }
+
+                        // Favorites Quick Pull
+                        IconButton(onClick = { showFavoritesShelf = true }) {
+                            Icon(Icons.Default.Star, contentDescription = "Favorites Shelf", tint = Color(0xFFF59E0B))
+                        }
+
+                        // Dark Mode Toggle
                         IconButton(onClick = { isDarkMode = !isDarkMode }) {
                             Icon(
                                 imageVector = if (isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
@@ -164,7 +240,7 @@ fun ReaderScreen(
 
         // Auto-Hiding Bottom HUD (Page Controls)
         AnimatedVisibility(
-            visible = isHudVisible,
+            visible = isHudVisible && !isDrawingMode,
             enter = fadeIn() + slideInVertically { it },
             exit = fadeOut() + slideOutVertically { it },
             modifier = Modifier
@@ -173,9 +249,10 @@ fun ReaderScreen(
                 .padding(bottom = 16.dp)
         ) {
             Surface(
-                color = Zinc900.copy(alpha = 0.92f),
+                color = Zinc900.copy(alpha = 0.94f),
                 contentColor = Color.White,
-                shape = CircleShape
+                shape = CircleShape,
+                shadowElevation = 8.dp
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -204,5 +281,16 @@ fun ReaderScreen(
                 }
             }
         }
+
+        // Two-Finger Pull Down Favorites Shelf
+        FavoritesShelf(
+            isVisible = showFavoritesShelf,
+            documents = allDocuments,
+            onSelectDocument = {
+                onSelectDocument(it)
+                showFavoritesShelf = false
+            },
+            onDismiss = { showFavoritesShelf = false }
+        )
     }
 }

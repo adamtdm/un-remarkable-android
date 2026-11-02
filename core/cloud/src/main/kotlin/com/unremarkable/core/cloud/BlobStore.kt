@@ -12,6 +12,7 @@ interface BlobStore {
     fun getBlobFile(hash: String): File
     fun totalSizeBytes(): Long
     fun blobCount(): Int
+    fun clear()
 }
 
 class FileBlobStore(private val baseDir: File) : BlobStore {
@@ -73,6 +74,10 @@ class FileBlobStore(private val baseDir: File) : BlobStore {
 
     override fun blobCount(): Int {
         return baseDir.walkTopDown().count { it.isFile && !it.name.endsWith(".tmp") }
+    }
+
+    override fun clear() {
+        baseDir.listFiles()?.forEach { it.deleteRecursively() }
     }
 
     companion object {
