@@ -43,4 +43,21 @@ class AppSettings(context: Context) {
         set(value) {
             prefs.edit().putBoolean("sidebar_minimized", value).apply()
         }
+
+    var isGridView: Boolean
+        get() = prefs.getBoolean("library_grid_view", true)
+        set(value) {
+            prefs.edit().putBoolean("library_grid_view", value).apply()
+        }
+
+    fun getDocumentInvertPreference(docId: String): Boolean? {
+        if (docId.isBlank()) return null
+        val key = "doc_invert_$docId"
+        return if (prefs.contains(key)) prefs.getBoolean(key, false) else null
+    }
+
+    fun setDocumentInvertPreference(docId: String, invert: Boolean) {
+        if (docId.isBlank()) return
+        prefs.edit().putBoolean("doc_invert_$docId", invert).apply()
+    }
 }

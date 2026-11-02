@@ -15,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -36,6 +37,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -55,6 +57,7 @@ import com.unremarkable.android.render.PdfDocumentRenderer
 import com.unremarkable.android.render.PdfOutlineParser
 import com.unremarkable.android.render.RmPageCanvasRenderer
 import com.unremarkable.android.storage.AnnotationStore
+import com.unremarkable.android.storage.AppSettings
 import com.unremarkable.android.ui.components.*
 import com.unremarkable.android.ui.theme.BasaltBgPrimary
 import com.unremarkable.android.ui.theme.BasaltBgSecondary
@@ -83,9 +86,11 @@ fun ReaderScreen(
     allDocuments: List<DocumentItem> = emptyList(),
     blobStore: BlobStore? = null,
     annotationStore: AnnotationStore? = null,
+    appSettings: AppSettings? = null,
     cloudClient: RMCloudClient? = null,
     isFoldable: Boolean = false,
     isFullscreen: Boolean = false,
+    isBackEnabled: Boolean = true,
     onToggleFullscreen: () -> Unit = {},
     onSelectDocument: (DocumentItem) -> Unit = {},
     onOpenMeetingRecorder: () -> Unit = {},
@@ -102,18 +107,32 @@ fun ReaderScreen(
         mutableIntStateOf(maxOf(document.pages.size, document.pageCount, 1))
     }
 
-    val isAppDark = isSystemInDarkTheme() || MaterialTheme.colorScheme.background == BasaltBgPrimary
-    val isComic = remember(document) {
+    val isAppDark = MaterialTheme.colorScheme.background == BasaltBgPrimary
+    val isComicTag = remember(document) {
         document.tags.any { it.equals("Comic", ignoreCase = true) || it.equals("Optimized", ignoreCase = true) } ||
             document.visibleName.endsWith(".cbz", ignoreCase = true) ||
             document.visibleName.contains("comic", ignoreCase = true)
     }
 
-    var isDarkMode by remember(document.id) { mutableStateOf(isAppDark) }
+    // Per-file persisted inversion preference (null = automatic based on app theme & artwork detection)
+    var userInvertOverride by remember(document.id) {
+        mutableStateOf(appSettings?.getDocumentInvertPreference(document.id))
+    }
+    var autoDetectedArtwork by remember(document.id) { mutableStateOf(isComicTag) }
+    val effectiveInvert = userInvertOverride ?: (isAppDark && !autoDetectedArtwork)
+
+    fun toggleInvertForDocument() {
+        val next = !effectiveInvert
+        userInvertOverride = next
+        appSettings?.setDocumentInvertPreference(document.id, next)
+        val msg = if (next) "Page inversion on (saved for this file)" else "Original colors kept (saved for this file)"
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    }
+
     var fitMode by remember { mutableStateOf(FitMode.FIT_PAGE) }
     var isHudVisible by remember { mutableStateOf(true) }
     var isDrawingMode by remember { mutableStateOf(false) }
-    var isDualPageMode by remember(isFoldable) { mutableStateOf(isFoldable) }
+    var isDualPageMode by remember { mutableStateOf(false) }
 
     // Pinch-to-Zoom & Pan state (matches Docker viewer 1x..4.5x + focal pan + double-tap 2.2x)
     var zoomScale by remember(document.id, currentPage, fitMode, isDualPageMode) { mutableFloatStateOf(1f) }
@@ -136,7 +155,7 @@ fun ReaderScreen(
     }
 
     // System Back gesture: exit drawing -> reset zoom -> back to library
-    BackHandler {
+    BackHandler(enabled = isBackEnabled) {
         when {
             isDrawingMode -> isDrawingMode = false
             zoomScale > 1.05f -> resetZoom()
@@ -297,7 +316,11 @@ fun ReaderScreen(
             when {
                 hasPdfBacking -> {
                     val rawPdfBmp = renderer!!.renderPage(rawPdfIdx, 1404, 1872)
-                    val shouldInvertColors = isDarkMode && !isComic
+                    val pageIsArtwork = isComicTag || isArtworkOrComicBitmap(rawPdfBmp)
+                    if (pageIsArtwork && !autoDetectedArtwork) {
+                        withContext(Dispatchers.Main) { autoDetectedArtwork = true }
+                    }
+                    val shouldInvertColors = userInvertOverride ?: (isAppDark && !pageIsArtwork)
                     val outBmp = if (shouldInvertColors || rmPage != null) {
                         val mutable = Bitmap.createBitmap(rawPdfBmp.width, rawPdfBmp.height, Bitmap.Config.ARGB_8888)
                         val canvas = Canvas(mutable)
@@ -318,7 +341,7 @@ fun ReaderScreen(
                         canvas.drawBitmap(rawPdfBmp, 0f, 0f, pdfPaint)
                         rawPdfBmp.recycle()
                         if (rmPage != null) {
-                            RmPageCanvasRenderer.drawRmOverlay(canvas, rmPage, isDarkMode, mutable.width, mutable.height)
+                            RmPageCanvasRenderer.drawRmOverlay(canvas, rmPage, shouldInvertColors, mutable.width, mutable.height)
                         }
                         mutable
                     } else {
@@ -329,22 +352,22 @@ fun ReaderScreen(
 
                 epubPages.isNotEmpty() -> {
                     val lines = epubPages.getOrElse(pageIdx.coerceIn(0, epubPages.lastIndex)) { emptyList() }
-                    val bmp = RmPageCanvasRenderer.renderEpubTextPage(lines, pageNum, totalPages, isDarkMode)
+                    val bmp = RmPageCanvasRenderer.renderEpubTextPage(lines, pageNum, totalPages, effectiveInvert)
                     if (rmPage != null) {
-                        RmPageCanvasRenderer.drawRmOverlay(Canvas(bmp), rmPage, isDarkMode, bmp.width, bmp.height)
+                        RmPageCanvasRenderer.drawRmOverlay(Canvas(bmp), rmPage, effectiveInvert, bmp.width, bmp.height)
                     }
                     bmp
                 }
 
                 else -> {
-                    RmPageCanvasRenderer.renderNotebookPage(rmPage, isDarkMode, 1404, 1872)
+                    RmPageCanvasRenderer.renderNotebookPage(rmPage, effectiveInvert, 1404, 1872)
                 }
             }
         }
     }
 
     // Render active page(s) and prefetch adjacent .rm blobs in background
-    LaunchedEffect(document.id, leftPage, rightPage, pdfRenderer, epubPages, isLoadingFile, isDarkMode, retryToken) {
+    LaunchedEffect(document.id, leftPage, rightPage, pdfRenderer, epubPages, isLoadingFile, isAppDark, userInvertOverride, retryToken) {
         if (isLoadingFile) return@LaunchedEffect
         isPageRendering = true
         leftBitmap = loadCompositePage(leftPage)
@@ -378,8 +401,12 @@ fun ReaderScreen(
         onDispose { activeRenderer?.close() }
     }
 
-    val isDarkView = isDarkMode || isAppDark
-    val canvasBackground = if (isDarkView) BasaltBgPrimary else PaperBgPrimary
+    val isDarkView = isAppDark || effectiveInvert
+    val canvasBackground = when {
+        isAppDark -> Color.Black
+        effectiveInvert -> BasaltBgPrimary
+        else -> PaperBgPrimary
+    }
     val swipeThresholdPx = with(density) { 64.dp.toPx() }
     val pageStep = if (isDualPageMode) 2 else 1
 
@@ -539,7 +566,8 @@ fun ReaderScreen(
                         ReaderPageCard(
                             bitmap = leftBitmap,
                             pageNum = leftPage,
-                            isDarkMode = isDarkMode,
+                            isPageInverted = effectiveInvert,
+                            isStageDark = isDarkView,
                             fitWidth = false,
                             isDrawingMode = isDrawingMode,
                             strokes = pageStrokesMap[leftPage].orEmpty(),
@@ -558,7 +586,8 @@ fun ReaderScreen(
                         ReaderPageCard(
                             bitmap = rightBitmap,
                             pageNum = rightPage,
-                            isDarkMode = isDarkMode,
+                            isPageInverted = effectiveInvert,
+                            isStageDark = isDarkView,
                             fitWidth = false,
                             isDrawingMode = isDrawingMode,
                             strokes = pageStrokesMap[rightPage].orEmpty(),
@@ -575,7 +604,8 @@ fun ReaderScreen(
                     ReaderPageCard(
                         bitmap = leftBitmap,
                         pageNum = currentPage,
-                        isDarkMode = isDarkMode,
+                        isPageInverted = effectiveInvert,
+                        isStageDark = isDarkView,
                         fitWidth = fitMode == FitMode.FIT_WIDTH,
                         isDrawingMode = isDrawingMode,
                         strokes = pageStrokesMap[currentPage].orEmpty(),
@@ -663,11 +693,17 @@ fun ReaderScreen(
                             )
                         }
 
-                        // Dark Mode Toggle (matches Docker btnPageDarkToggle)
-                        IconButton(onClick = { isDarkMode = !isDarkMode }) {
+                        // Per-File Page Inversion Toggle (matches Docker btnPageDarkToggle)
+                        IconButton(
+                            onClick = { toggleInvertForDocument() },
+                            colors = IconButtonDefaults.iconButtonColors(
+                                containerColor = if (effectiveInvert) Color.White.copy(alpha = 0.14f) else Color.Transparent,
+                                contentColor = Color.White
+                            )
+                        ) {
                             Icon(
-                                imageVector = if (isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
-                                contentDescription = "Toggle Dark Page Theme"
+                                imageVector = if (effectiveInvert) Icons.Default.InvertColors else Icons.Default.InvertColorsOff,
+                                contentDescription = if (effectiveInvert) "Disable Page Inversion" else "Invert Page Colors"
                             )
                         }
 
@@ -699,6 +735,19 @@ fun ReaderScreen(
                                 expanded = showOverflowMenu,
                                 onDismissRequest = { showOverflowMenu = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Invert Page Colors: ${if (effectiveInvert) "On" else "Off"}") },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (effectiveInvert) Icons.Default.InvertColors else Icons.Default.InvertColorsOff,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        toggleInvertForDocument()
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = { Text(if (fitMode == FitMode.FIT_PAGE) "Fit Width" else "Fit Page") },
                                     leadingIcon = { Icon(Icons.Default.FitScreen, contentDescription = null) },
@@ -937,7 +986,8 @@ fun ReaderScreen(
 private fun ReaderPageCard(
     bitmap: Bitmap?,
     pageNum: Int,
-    isDarkMode: Boolean,
+    isPageInverted: Boolean,
+    isStageDark: Boolean,
     fitWidth: Boolean,
     isDrawingMode: Boolean,
     strokes: List<DrawnStroke>,
@@ -949,47 +999,124 @@ private fun ReaderPageCard(
         if (fitWidth) scrollState.scrollTo(0)
     }
 
-    val cardBg = if (isDarkMode) BasaltBgPrimary else Color.White
-    val cardBorder = if (isDarkMode) null else BorderStroke(1.dp, PaperBorder)
-
-    Surface(
-        color = cardBg,
-        shape = if (isDarkMode) RoundedCornerShape(0.dp) else RoundedCornerShape(6.dp),
-        border = cardBorder,
-        shadowElevation = if (isDarkMode) 0.dp else 2.dp,
-        modifier = modifier
+    // Outer container is strictly transparent so the dark stage (Color.Black in Dark Mode) always
+    // shows cleanly behind letterbox/pillarbox regions without any white bars around the file.
+    BoxWithConstraints(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
     ) {
-        val innerMod = if (fitWidth && !isDrawingMode) {
-            Modifier.fillMaxSize().verticalScroll(scrollState)
+        if (bitmap == null) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(30.dp),
+                color = if (isStageDark) Color.White else MaterialTheme.colorScheme.primary
+            )
         } else {
-            Modifier.fillMaxSize()
-        }
-
-        Box(
-            modifier = innerMod.background(cardBg),
-            contentAlignment = Alignment.Center
-        ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Page $pageNum",
-                    contentScale = if (fitWidth) ContentScale.FillWidth else ContentScale.Fit,
-                    modifier = if (fitWidth) Modifier.fillMaxWidth() else Modifier.fillMaxSize()
-                )
+            val pageRatio = (bitmap.width.toFloat() / bitmap.height.toFloat().coerceAtLeast(1f)).coerceIn(0.2f, 5f)
+            val pageBorderModifier = if (!isStageDark && !isPageInverted) {
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .border(1.dp, PaperBorder, RoundedCornerShape(6.dp))
             } else {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(30.dp),
-                    color = if (isDarkMode) Color.White else MaterialTheme.colorScheme.primary
-                )
+                Modifier
             }
 
-            DrawingCanvas(
-                isDarkMode = isDarkMode,
-                isDrawingEnabled = isDrawingMode,
-                strokes = strokes,
-                onStrokesChanged = onStrokesChanged,
-                modifier = Modifier.matchParentSize()
-            )
+            if (fitWidth && !isDrawingMode) {
+                Box(
+                    modifier = Modifier.fillMaxSize().verticalScroll(scrollState),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(pageRatio)
+                            .then(pageBorderModifier)
+                    ) {
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Page $pageNum",
+                            contentScale = ContentScale.FillBounds,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        DrawingCanvas(
+                            isDarkMode = isPageInverted,
+                            isDrawingEnabled = false,
+                            strokes = strokes,
+                            onStrokesChanged = onStrokesChanged,
+                            modifier = Modifier.matchParentSize()
+                        )
+                    }
+                }
+            } else {
+                val containerRatio = if (maxHeight > 0.dp) maxWidth / maxHeight else 1f
+                val fittedPageModifier = if (containerRatio > pageRatio) {
+                    Modifier.fillMaxHeight().aspectRatio(pageRatio, matchHeightConstraintsFirst = true)
+                } else {
+                    Modifier.fillMaxWidth().aspectRatio(pageRatio, matchHeightConstraintsFirst = false)
+                }
+
+                Box(
+                    modifier = fittedPageModifier.then(pageBorderModifier)
+                ) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Page $pageNum",
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    DrawingCanvas(
+                        isDarkMode = isPageInverted,
+                        isDrawingEnabled = isDrawingMode,
+                        strokes = strokes,
+                        onStrokesChanged = onStrokesChanged,
+                        modifier = Modifier.matchParentSize()
+                    )
+                }
+            }
         }
     }
+}
+
+/**
+ * Fast interior pixel sampling matching container app's `pdf_render.py` comic/artwork detector:
+ * preserves authentic colors on graphic novels, comics, and image-heavy pages instead of inverting them.
+ */
+internal fun isArtworkOrComicBitmap(bmp: Bitmap): Boolean {
+    val w = bmp.width
+    val h = bmp.height
+    if (w < 16 || h < 16) return false
+
+    val cols = 24
+    val rows = 32
+    val xStart = (w * 0.06f).toInt()
+    val xEnd = (w * 0.94f).toInt().coerceAtLeast(xStart + 1)
+    val yStart = (h * 0.06f).toInt()
+    val yEnd = (h * 0.94f).toInt().coerceAtLeast(yStart + 1)
+
+    var total = 0
+    var whitePaper = 0
+    var colorful = 0
+
+    for (ry in 0 until rows) {
+        val y = yStart + ((yEnd - yStart) * ry) / rows
+        for (cx in 0 until cols) {
+            val x = xStart + ((xEnd - xStart) * cx) / cols
+            val px = bmp.getPixel(x, y)
+            val r = (px shr 16) and 0xFF
+            val g = (px shr 8) and 0xFF
+            val b = px and 0xFF
+            total++
+            if (r >= 232 && g >= 232 && b >= 232) {
+                whitePaper++
+            }
+            val spread = maxOf(r, g, b) - minOf(r, g, b)
+            if (spread >= 38) {
+                colorful++
+            }
+        }
+    }
+
+    if (total == 0) return false
+    val whiteFraction = whitePaper.toFloat() / total
+    val colorFraction = colorful.toFloat() / total
+    return whiteFraction < 0.55f || colorFraction > 0.18f
 }

@@ -171,7 +171,7 @@ fun MeetingRecorderDialog(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Record, transcribe, and convert into a reMarkable notebook",
+                                text = "Saves directly to your Meeting Notes folder",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -456,7 +456,7 @@ fun MeetingRecorderDialog(
                                     audioFile = recordedAudioFile
                                 )
 
-                                Toast.makeText(context, "Created Notebook: ${notebook.visibleName} (${notebook.pageCount} pages)", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Saved \"${notebook.visibleName}\" to Meeting Notes", Toast.LENGTH_SHORT).show()
                                 onNotebookCreated(notebook)
                                 onDismiss()
                             } catch (e: Exception) {

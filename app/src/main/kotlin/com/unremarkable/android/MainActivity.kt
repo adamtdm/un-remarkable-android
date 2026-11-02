@@ -10,7 +10,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -188,16 +196,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                BackHandler(enabled = showSettings) {
-                    showSettings = false
-                }
-                BackHandler(enabled = selectedDocument != null) {
+                val easeOutExpo = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
+
+                BackHandler(enabled = selectedDocument != null && !showSettings) {
                     selectedDocument = null
                 }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    when {
-                        showOnboarding -> {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        if (showOnboarding) {
                             OnboardingScreen(
                                 isPairing = isPairing,
                                 errorMessage = pairingError,
@@ -234,49 +241,7 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onSkip = { showOnboarding = false }
                             )
-                        }
-                        showSettings -> {
-                            SettingsScreen(
-                                isAuthenticated = authManager.isAuthenticated,
-                                deviceId = authManager.currentTokens.deviceId,
-                                totalCacheSizeMb = blobStore.totalSizeBytes() / (1024f * 1024f),
-                                cachedBlobCount = blobStore.blobCount(),
-                                appSettings = appSettings,
-                                onThemeChanged = { themeModeState = it },
-                                onBack = {
-                                    themeModeState = appSettings.themeMode
-                                    showSettings = false
-                                },
-                                onPairAccount = {
-                                    showSettings = false
-                                    showOnboarding = true
-                                },
-                                onUnpairAccount = {
-                                    authManager.clearTokens()
-                                    repository.clearAll()
-                                    blobStore.clear()
-                                    annotationStore.clearAll()
-                                    documents = emptyList()
-                                    selectedDocument = null
-                                    syncGeneration = 0L
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Device unpaired and cache cleared",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                },
-                                onForceResync = {
-                                    repository.saveRoot("", 0L)
-                                    showSettings = false
-                                    runSync()
-                                },
-                                onClearCache = {
-                                    blobStore.clear()
-                                    Toast.makeText(this@MainActivity, "Local cache cleared", Toast.LENGTH_SHORT).show()
-                                }
-                            )
-                        }
-                        else -> {
+                        } else {
                             AdaptiveScaffold(
                                 documents = documents,
                                 isSyncing = isSyncing,
@@ -304,6 +269,7 @@ class MainActivity : ComponentActivity() {
                                 onSelectDocument = { selectedDocument = it },
                                 blobStore = blobStore,
                                 annotationStore = annotationStore,
+                                appSettings = appSettings,
                                 cloudClient = cloudClient,
                                 initialIsSidebarMinimized = appSettings.isSidebarMinimized,
                                 onSidebarMinimizedChanged = { isMin -> appSettings.isSidebarMinimized = isMin },
@@ -316,6 +282,57 @@ class MainActivity : ComponentActivity() {
                                     Toast.makeText(this@MainActivity, "\"${doc.visibleName}\" moved to trash", Toast.LENGTH_SHORT).show()
                                 }
                             )
+
+                            AnimatedVisibility(
+                                visible = showSettings,
+                                enter = slideInHorizontally(tween(240, easing = easeOutExpo)) { it / 8 } + fadeIn(tween(180)),
+                                exit = slideOutHorizontally(tween(200, easing = easeOutExpo)) { it / 8 } + fadeOut(tween(140)),
+                                label = "SettingsOverlayTransition"
+                            ) {
+                                BackHandler(enabled = showSettings) {
+                                    themeModeState = appSettings.themeMode
+                                    showSettings = false
+                                }
+                                SettingsScreen(
+                                    isAuthenticated = authManager.isAuthenticated,
+                                    deviceId = authManager.currentTokens.deviceId,
+                                    totalCacheSizeMb = blobStore.totalSizeBytes() / (1024f * 1024f),
+                                    cachedBlobCount = blobStore.blobCount(),
+                                    appSettings = appSettings,
+                                    onThemeChanged = { themeModeState = it },
+                                    onBack = {
+                                        themeModeState = appSettings.themeMode
+                                        showSettings = false
+                                    },
+                                    onPairAccount = {
+                                        showSettings = false
+                                        showOnboarding = true
+                                    },
+                                    onUnpairAccount = {
+                                        authManager.clearTokens()
+                                        repository.clearAll()
+                                        blobStore.clear()
+                                        annotationStore.clearAll()
+                                        documents = emptyList()
+                                        selectedDocument = null
+                                        syncGeneration = 0L
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Device unpaired and cache cleared",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    onForceResync = {
+                                        repository.saveRoot("", 0L)
+                                        showSettings = false
+                                        runSync()
+                                    },
+                                    onClearCache = {
+                                        blobStore.clear()
+                                        Toast.makeText(this@MainActivity, "Local cache cleared", Toast.LENGTH_SHORT).show()
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -370,6 +387,7 @@ class MainActivity : ComponentActivity() {
                             blobStore = blobStore,
                             onNotebookCreated = { notebook ->
                                 documents = repository.getAllDocuments()
+                                currentFolderId = notebook.parent
                                 selectedDocument = notebook
                                 runSync(silentIfUnauthenticated = true)
                             },

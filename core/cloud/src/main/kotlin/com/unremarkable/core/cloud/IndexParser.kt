@@ -2,6 +2,7 @@ package com.unremarkable.core.cloud
 
 import com.unremarkable.core.model.Entry
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 object IndexParser {
 
@@ -64,4 +65,23 @@ object IndexParser {
 
         return sb.toString()
     }
+
+    fun computeDocIndexHash(entries: List<Entry>): String {
+        val sorted = entries.sortedBy { it.docId }
+        val digest = MessageDigest.getInstance("SHA-256")
+        for (entry in sorted) {
+            val hex = entry.hash.trim()
+            require(hex.length % 2 == 0) { "Invalid hex hash '${entry.hash}'" }
+            val raw = ByteArray(hex.length / 2) { idx ->
+                hex.substring(idx * 2, idx * 2 + 2).toInt(16).toByte()
+            }
+            digest.update(raw)
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    fun computeRootHash(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
 }

@@ -203,7 +203,7 @@ fun PageThumbnailGridDialog(
                                             .fillMaxWidth()
                                             .aspectRatio(0.72f)
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(Color.White),
+                                            .background(MaterialTheme.colorScheme.background),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (thumbnailBitmap != null) {

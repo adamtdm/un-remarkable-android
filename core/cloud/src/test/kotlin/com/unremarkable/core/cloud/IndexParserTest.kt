@@ -53,4 +53,25 @@ class IndexParserTest {
             IndexParser.parseIndex("")
         }
     }
+
+    @Test
+    fun `computeDocIndexHash is deterministic regardless of entry order`() {
+        val h1 = "a".repeat(64)
+        val h2 = "b".repeat(64)
+        val e1 = Entry(hash = h1, type = Entry.FILE_TYPE, docId = "doc.content", subfiles = 0, size = 100)
+        val e2 = Entry(hash = h2, type = Entry.FILE_TYPE, docId = "doc.metadata", subfiles = 0, size = 80)
+
+        val hashForward = IndexParser.computeDocIndexHash(listOf(e1, e2))
+        val hashReverse = IndexParser.computeDocIndexHash(listOf(e2, e1))
+
+        assertEquals(64, hashForward.length)
+        assertEquals(hashForward, hashReverse)
+    }
+
+    @Test
+    fun `computeRootHash returns 64-char lowercase sha256`() {
+        val digest = IndexParser.computeRootHash("3\n".toByteArray(Charsets.UTF_8))
+        assertEquals(64, digest.length)
+        assertTrue(digest.all { it in '0'..'9' || it in 'a'..'f' })
+    }
 }

@@ -151,4 +151,81 @@ class SyncEngineTest {
         )
         assertTrue(engine.sync() is SyncResult.UpToDate)
     }
+
+    @Test
+    fun `sync pushes localOnly folder to cloud before pulling root`(@TempDir tempDir: File) = runBlocking {
+        val serverUrl = server.url("").toString().removeSuffix("/")
+        val storage = InMemoryTokenStorage(
+            AuthTokens(deviceToken = "dev-token", userToken = "user-token")
+        )
+        val auth = AuthManager(storage = storage, authHost = serverUrl)
+        val client = RMCloudClient(auth = auth, syncHost = serverUrl)
+        val blobStore = FileBlobStore(tempDir)
+        val repository = InMemorySyncRepository()
+
+        repository.upsertDocument(
+            DocumentItem(
+                id = "folder-meeting-1",
+                visibleName = "Meeting Notes",
+                parent = "",
+                isFolder = true,
+                lastModified = 1730700000000L,
+                localOnly = true
+            )
+        )
+
+        val engine = SyncEngine(client, blobStore, repository)
+
+        // createRemoteFolder sequence:
+        // 1. putBlob(.metadata)
+        server.enqueue(MockResponse().setResponseCode(200))
+        // 2. putBlob(.docSchema)
+        server.enqueue(MockResponse().setResponseCode(200))
+        // 3. getRoot()
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"hash": "initial-root", "generation": 1, "schemaVersion": "3"}""")
+        )
+        // 4. getRootIndex()
+        server.enqueue(MockResponse().setResponseCode(200).setBody("3\n"))
+        // 5. putBlob(new root.docSchema)
+        server.enqueue(MockResponse().setResponseCode(200))
+        // 6. updateRoot()
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"hash": "updated-root", "generation": 2}""")
+        )
+
+        // Subsequent pull phase:
+        // 7. getRoot()
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"hash": "updated-root", "generation": 2, "schemaVersion": "3"}""")
+        )
+        // 8. getRootIndex()
+        val folderRootManifest = """
+            3
+            folder-doc-hash:80000000:folder-meeting-1:1:120
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(folderRootManifest))
+        // 9. getBlob(folder-doc-hash)
+        val folderManifest = """
+            3
+            folder-meta-hash:0:folder-meeting-1.metadata:0:120
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(folderManifest))
+        // 10. getBlob(folder-meta-hash)
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"visibleName":"Meeting Notes","type":"CollectionType","parent":"","lastModified":"1730700000000"}""")
+        )
+
+        val res = engine.sync()
+        assertTrue(res is SyncResult.Success)
+        val syncedFolder = repository.getDocument("folder-meeting-1")
+        assertNotNull(syncedFolder)
+        assertEquals("Meeting Notes", syncedFolder?.visibleName)
+        assertTrue(syncedFolder?.isFolder == true)
+        assertFalse(syncedFolder?.localOnly ?: true)
+    }
 }

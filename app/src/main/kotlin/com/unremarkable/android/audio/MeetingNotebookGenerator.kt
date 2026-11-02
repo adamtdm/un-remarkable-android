@@ -17,10 +17,35 @@ import java.util.*
 
 object MeetingNotebookGenerator {
 
+    const val DEFAULT_MEETING_FOLDER_NAME = "Meeting Notes"
+
     private const val PAGE_WIDTH = 1404
     private const val PAGE_HEIGHT = 1872
     private const val MARGIN_X = 80f
     private const val USABLE_WIDTH = PAGE_WIDTH - (MARGIN_X * 2)
+
+    fun resolveOrCreateMeetingNotesFolder(
+        repository: com.unremarkable.core.model.SyncRepository,
+        timestampMs: Long = System.currentTimeMillis()
+    ): DocumentItem {
+        val allDocs = repository.getAllDocuments()
+        val existing = allDocs
+            .filter { it.isFolder && !it.deleted && it.parent != "trash" && it.visibleName.trim().equals(DEFAULT_MEETING_FOLDER_NAME, ignoreCase = true) }
+            .sortedWith(compareBy<DocumentItem> { it.parent.isNotEmpty() }.thenBy { it.localOnly })
+            .firstOrNull()
+        if (existing != null) return existing
+
+        val created = DocumentItem(
+            id = UUID.randomUUID().toString(),
+            visibleName = DEFAULT_MEETING_FOLDER_NAME,
+            parent = "",
+            isFolder = true,
+            lastModified = timestampMs,
+            localOnly = true
+        )
+        repository.upsertDocument(created)
+        return created
+    }
 
     suspend fun generateMeetingNotebook(
         repository: PersistentDocumentRepository,
@@ -225,10 +250,12 @@ object MeetingNotebookGenerator {
         val pdfHash = com.unremarkable.core.cloud.FileBlobStore.sha256(pdfBytes)
         blobStore.putBlob(pdfHash, pdfBytes)
 
+        val meetingFolder = resolveOrCreateMeetingNotesFolder(repository, dateTimestamp)
+
         val docItem = DocumentItem(
             id = docId,
             visibleName = safeTitle,
-            parent = "",
+            parent = meetingFolder.id,
             isFolder = false,
             pageCount = totalPages,
             pinned = true,

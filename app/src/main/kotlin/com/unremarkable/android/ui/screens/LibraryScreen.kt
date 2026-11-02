@@ -3,6 +3,8 @@ package com.unremarkable.android.ui.screens
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -12,11 +14,15 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -81,6 +87,8 @@ enum class LibraryViewMode {
     GRID
 }
 
+private val LibraryEaseOutExpo = CubicBezierEasing(0.16f, 1f, 0.3f, 1f)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
@@ -91,7 +99,19 @@ fun LibraryScreen(
     currentFolderId: String = "",
     blobStore: BlobStore? = null,
     isFoldable: Boolean = false,
+    hasSideRail: Boolean = false,
+    isBackEnabled: Boolean = true,
     focusSearchTrigger: Long = 0L,
+    gridStates: MutableMap<String, LazyGridState>? = null,
+    listStates: MutableMap<String, LazyListState>? = null,
+    externalSearchQuery: String? = null,
+    onExternalSearchQueryChange: ((String) -> Unit)? = null,
+    externalFilter: DocumentFilter? = null,
+    onExternalFilterChange: ((DocumentFilter) -> Unit)? = null,
+    externalSortMode: LibrarySort? = null,
+    onExternalSortModeChange: ((LibrarySort) -> Unit)? = null,
+    externalViewMode: LibraryViewMode? = null,
+    onExternalViewModeChange: ((LibraryViewMode) -> Unit)? = null,
     onMinimizeSidebar: () -> Unit = {},
     onGoHome: () -> Unit = {},
     onOpenDocument: (DocumentItem) -> Unit,
@@ -105,25 +125,38 @@ fun LibraryScreen(
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedFilter by remember { mutableStateOf(DocumentFilter.ALL) }
-    var sortMode by remember { mutableStateOf(LibrarySort.MODIFIED) }
-    var viewMode by remember { mutableStateOf(LibraryViewMode.LIST) }
+    val localGridStates = remember { mutableMapOf<String, LazyGridState>() }
+    val localListStates = remember { mutableMapOf<String, LazyListState>() }
+    val activeGridStates = gridStates ?: localGridStates
+    val activeListStates = listStates ?: localListStates
+
+    var internalSearchQuery by remember { mutableStateOf("") }
+    var internalSelectedFilter by remember { mutableStateOf(DocumentFilter.ALL) }
+    var internalSortMode by remember { mutableStateOf(LibrarySort.MODIFIED) }
+    var internalViewMode by remember { mutableStateOf(LibraryViewMode.GRID) }
+
+    val searchQuery = externalSearchQuery ?: internalSearchQuery
+    val selectedFilter = externalFilter ?: internalSelectedFilter
+    val sortMode = externalSortMode ?: internalSortMode
+    val viewMode = externalViewMode ?: internalViewMode
+
+    fun setSearchQuery(value: String) {
+        if (onExternalSearchQueryChange != null) onExternalSearchQueryChange(value) else internalSearchQuery = value
+    }
+    fun setSelectedFilter(value: DocumentFilter) {
+        if (onExternalFilterChange != null) onExternalFilterChange(value) else internalSelectedFilter = value
+    }
+    fun setSortMode(value: LibrarySort) {
+        if (onExternalSortModeChange != null) onExternalSortModeChange(value) else internalSortMode = value
+    }
+    fun setViewMode(value: LibraryViewMode) {
+        if (onExternalViewModeChange != null) onExternalViewModeChange(value) else internalViewMode = value
+    }
+
     var showSortMenu by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
     var documentPendingDelete by remember { mutableStateOf<DocumentItem?>(null) }
     var contextMenuDoc by remember { mutableStateOf<DocumentItem?>(null) }
-
-    val recentDocs = remember(documents, currentFolderId, searchQuery, selectedFilter) {
-        if (currentFolderId.isEmpty() && searchQuery.isBlank() && selectedFilter == DocumentFilter.ALL) {
-            documents
-                .filter { !it.isFolder && it.parent != "trash" }
-                .sortedByDescending { it.lastModified }
-                .take(4)
-        } else {
-            emptyList()
-        }
-    }
 
     val searchFocusRequester = remember { FocusRequester() }
     LaunchedEffect(focusSearchTrigger) {
@@ -148,131 +181,79 @@ fun LibraryScreen(
         trail.asReversed()
     }
 
-    BackHandler(enabled = searchQuery.isNotEmpty() || currentFolderId.isNotEmpty()) {
+    BackHandler(enabled = isBackEnabled && (searchQuery.isNotEmpty() || currentFolderId.isNotEmpty())) {
         if (searchQuery.isNotEmpty()) {
-            searchQuery = ""
+            setSearchQuery("")
         } else {
             onOpenFolder(parentFolderId)
         }
     }
 
-    val filteredDocs = remember(documents, searchQuery, currentFolderId, selectedFilter, sortMode) {
-        val activeDocs = documents.filter { it.parent != "trash" }
-
-        val baseList = when {
-            selectedFilter == DocumentFilter.PINNED -> {
-                if (searchQuery.isBlank()) {
-                    activeDocs.filter { it.pinned }
-                } else {
-                    activeDocs.filter {
-                        it.pinned && (
-                            it.visibleName.contains(searchQuery, ignoreCase = true) ||
-                                it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
-                            )
-                    }
-                }
-            }
-            searchQuery.isBlank() -> activeDocs.filter { it.parent == currentFolderId }
-            else -> activeDocs.filter {
-                it.visibleName.contains(searchQuery, ignoreCase = true) ||
-                    it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
-            }
-        }
-
-        val filtered = when (selectedFilter) {
-            DocumentFilter.ALL -> baseList
-            DocumentFilter.PINNED -> baseList
-            DocumentFilter.NOTEBOOKS -> baseList.filter {
-                !it.isFolder && (it.fileType.isBlank() || it.fileType == "notebook" || it.tags.contains("Note") || it.tags.contains("Task"))
-            }
-            DocumentFilter.PDFS -> baseList.filter {
-                !it.isFolder && (
-                    it.fileType == "pdf" ||
-                        it.fileType == "epub" ||
-                        it.visibleName.endsWith(".pdf", ignoreCase = true) ||
-                        it.visibleName.endsWith(".epub", ignoreCase = true)
-                    )
-            }
-            DocumentFilter.COMICS -> baseList.filter {
-                !it.isFolder && (it.tags.contains("Comic") || it.tags.contains("Optimized"))
-            }
-        }
-
-        val comparator = compareByDescending<DocumentItem> { it.isFolder }
-            .thenByDescending { it.pinned }
-            .let { base ->
-                when (sortMode) {
-                    LibrarySort.MODIFIED -> base.thenByDescending { it.lastModified }
-                    LibrarySort.NAME -> base.thenBy { it.visibleName.lowercase(Locale.US) }
-                    LibrarySort.PAGES -> base.thenByDescending { maxOf(it.pages.size, it.pageCount) }
-                }
-            }
-        filtered.sortedWith(comparator)
-    }
-
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                searchQuery = ""
-                                selectedFilter = DocumentFilter.ALL
-                                onOpenFolder("")
-                                onGoHome()
-                            }
-                            .padding(horizontal = 4.dp, vertical = 4.dp)
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_ur_logo),
-                            contentDescription = "Un-remarkable Logo",
+            if (!hasSideRail) {
+                TopAppBar(
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .size(28.dp)
-                                .clip(RoundedCornerShape(7.dp))
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "Un-remarkable",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.SemiBold,
-                                letterSpacing = (-0.2).sp
-                            ),
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                },
-                actions = {
-                    if (isFoldable) {
-                        IconButton(onClick = onMinimizeSidebar) {
-                            Icon(Icons.AutoMirrored.Filled.ViewSidebar, contentDescription = "Minimize to Rail")
-                        }
-                    }
-                    IconButton(onClick = onSyncNow, enabled = !isSyncing) {
-                        if (isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    setSearchQuery("")
+                                    setSelectedFilter(DocumentFilter.ALL)
+                                    onOpenFolder("")
+                                    onGoHome()
+                                }
+                                .padding(horizontal = 4.dp, vertical = 4.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.ic_ur_logo),
+                                contentDescription = "Un-remarkable Logo",
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(RoundedCornerShape(7.dp))
                             )
-                        } else {
-                            Icon(Icons.Default.Sync, contentDescription = "Sync Library")
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Un-remarkable",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.SemiBold,
+                                    letterSpacing = (-0.2).sp
+                                ),
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface,
-                    actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    actions = {
+                        if (isFoldable) {
+                            IconButton(onClick = onMinimizeSidebar) {
+                                Icon(Icons.AutoMirrored.Filled.ViewSidebar, contentDescription = "Minimize to Rail")
+                            }
+                        }
+                        IconButton(onClick = onSyncNow, enabled = !isSyncing) {
+                            if (isSyncing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Icon(Icons.Default.Sync, contentDescription = "Sync Library")
+                            }
+                        }
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface,
+                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 )
-            )
+            }
         },
         floatingActionButton = {
             FloatingActionButton(
@@ -292,6 +273,7 @@ fun LibraryScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background)
+                .then(if (hasSideRail) Modifier.statusBarsPadding().padding(top = 6.dp) else Modifier)
         ) {
             // Container App Style Search Bar (Pill shape with bg-tertiary)
             Surface(
@@ -315,7 +297,7 @@ fun LibraryScreen(
                     Spacer(modifier = Modifier.width(10.dp))
                     BasicTextField(
                         value = searchQuery,
-                        onValueChange = { searchQuery = it },
+                        onValueChange = { setSearchQuery(it) },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.bodyMedium.copy(
                             color = MaterialTheme.colorScheme.onSurface
@@ -337,7 +319,7 @@ fun LibraryScreen(
                     )
                     if (searchQuery.isNotEmpty()) {
                         IconButton(
-                            onClick = { searchQuery = "" },
+                            onClick = { setSearchQuery("") },
                             modifier = Modifier.size(24.dp)
                         ) {
                             Icon(
@@ -375,7 +357,7 @@ fun LibraryScreen(
                                 modifier = Modifier
                                     .clip(CircleShape)
                                     .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                                    .clickable { selectedFilter = filter }
+                                    .clickable { setSelectedFilter(filter) }
                                     .padding(horizontal = 13.dp, vertical = 6.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -476,7 +458,7 @@ fun LibraryScreen(
                                         }
                                     },
                                     onClick = {
-                                        sortMode = mode
+                                        setSortMode(mode)
                                         showSortMenu = false
                                     }
                                 )
@@ -487,7 +469,7 @@ fun LibraryScreen(
                     // View Mode Toggle (Grid vs List)
                     IconButton(
                         onClick = {
-                            viewMode = if (viewMode == LibraryViewMode.LIST) LibraryViewMode.GRID else LibraryViewMode.LIST
+                            setViewMode(if (viewMode == LibraryViewMode.LIST) LibraryViewMode.GRID else LibraryViewMode.LIST)
                         },
                         modifier = Modifier.size(32.dp)
                     ) {
@@ -541,11 +523,7 @@ fun LibraryScreen(
                 }
             }
 
-            val (folders, nonFolders) = remember(filteredDocs) {
-                filteredDocs.partition { it.isFolder }
-            }
-
-            // Main Document List or Grid with Pull-to-Refresh
+            // Main Document List or Grid with Pull-to-Refresh & Smooth Folder Transitions
             PullToRefreshBox(
                 isRefreshing = isSyncing,
                 onRefresh = onSyncNow,
@@ -553,246 +531,370 @@ fun LibraryScreen(
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                if (filteredDocs.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Description,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-                                modifier = Modifier.size(52.dp)
-                            )
-                            Text(
-                                text = if (searchQuery.isNotBlank()) "No matching notes or documents" else "Folder is empty",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "Tap + to create a note, record a meeting, or optimize a document",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
+                AnimatedContent(
+                    targetState = currentFolderId,
+                    transitionSpec = {
+                        fadeIn(tween(180, easing = LibraryEaseOutExpo)) togetherWith fadeOut(tween(120))
+                    },
+                    label = "FolderContentTransition",
+                    modifier = Modifier.fillMaxSize()
+                ) { targetFolderId ->
+                    val recentDocs = remember(documents, targetFolderId, searchQuery, selectedFilter) {
+                        if (targetFolderId.isEmpty() && searchQuery.isBlank() && selectedFilter == DocumentFilter.ALL) {
+                            documents
+                                .filter { !it.isFolder && it.parent != "trash" }
+                                .sortedByDescending { it.lastModified }
+                                .take(4)
+                        } else {
+                            emptyList()
                         }
                     }
-                } else if (viewMode == LibraryViewMode.GRID) {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 140.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        if (recentDocs.isNotEmpty()) {
-                            item(span = { GridItemSpan(maxLineSpan) }) {
-                                Column {
-                                    SectionHeader(title = "Jump Back In", count = recentDocs.size)
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState())
-                                            .padding(bottom = 6.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        recentDocs.forEach { recent ->
-                                            RecentJumpCard(
-                                                document = recent,
-                                                onClick = { onOpenDocument(recent) },
-                                                onLongClick = {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    contextMenuDoc = recent
-                                                }
+
+                    val filteredDocs = remember(documents, searchQuery, targetFolderId, selectedFilter, sortMode) {
+                        val activeDocs = documents.filter { it.parent != "trash" && !it.deleted }
+
+                        val baseList = when {
+                            selectedFilter == DocumentFilter.PINNED -> {
+                                if (searchQuery.isBlank()) {
+                                    activeDocs.filter { it.pinned }
+                                } else {
+                                    activeDocs.filter {
+                                        it.pinned && (
+                                            it.visibleName.contains(searchQuery, ignoreCase = true) ||
+                                                it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
                                             )
-                                        }
                                     }
                                 }
                             }
-                        }
-
-                        if (folders.isNotEmpty()) {
-                            item(span = { GridItemSpan(maxLineSpan) }) {
-                                SectionHeader(title = "Folders", count = folders.size)
-                            }
-                            items(folders, key = { it.id }) { folder ->
-                                FolderGridCard(
-                                    folder = folder,
-                                    allDocuments = documents,
-                                    onClick = { onOpenFolder(folder.id) },
-                                    onLongClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        contextMenuDoc = folder
-                                    }
-                                )
+                            searchQuery.isBlank() -> activeDocs.filter { it.parent == targetFolderId }
+                            else -> activeDocs.filter {
+                                it.visibleName.contains(searchQuery, ignoreCase = true) ||
+                                    it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
                             }
                         }
 
-                        if (nonFolders.isNotEmpty()) {
-                            if (folders.isNotEmpty() || recentDocs.isNotEmpty()) {
-                                item(span = { GridItemSpan(maxLineSpan) }) {
-                                    SectionHeader(
-                                        title = if (currentFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
-                                        count = nonFolders.size
+                        val filtered = when (selectedFilter) {
+                            DocumentFilter.ALL -> baseList
+                            DocumentFilter.PINNED -> baseList
+                            DocumentFilter.NOTEBOOKS -> baseList.filter {
+                                !it.isFolder && (it.fileType.isBlank() || it.fileType == "notebook" || it.tags.contains("Note") || it.tags.contains("Task"))
+                            }
+                            DocumentFilter.PDFS -> baseList.filter {
+                                !it.isFolder && (
+                                    it.fileType == "pdf" ||
+                                        it.fileType == "epub" ||
+                                        it.visibleName.endsWith(".pdf", ignoreCase = true) ||
+                                        it.visibleName.endsWith(".epub", ignoreCase = true)
                                     )
-                                }
                             }
-                            items(nonFolders, key = { it.id }) { doc ->
-                                DocumentGridCard(
-                                    document = doc,
-                                    blobStore = blobStore,
-                                    onClick = { onOpenDocument(doc) },
-                                    onLongClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        contextMenuDoc = doc
-                                    }
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (recentDocs.isNotEmpty()) {
-                            item {
-                                Column {
-                                    SectionHeader(title = "Jump Back In", count = recentDocs.size)
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState())
-                                            .padding(bottom = 6.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        recentDocs.forEach { recent ->
-                                            RecentJumpCard(
-                                                document = recent,
-                                                onClick = { onOpenDocument(recent) },
-                                                onLongClick = {
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    contextMenuDoc = recent
-                                                }
-                                            )
-                                        }
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                }
+                            DocumentFilter.COMICS -> baseList.filter {
+                                !it.isFolder && (it.tags.contains("Comic") || it.tags.contains("Optimized"))
                             }
                         }
 
-                        if (folders.isNotEmpty()) {
-                            item {
-                                SectionHeader(title = "Folders", count = folders.size)
+                        val comparator = compareByDescending<DocumentItem> { it.isFolder }
+                            .thenByDescending { it.pinned }
+                            .let { base ->
+                                when (sortMode) {
+                                    LibrarySort.MODIFIED -> base.thenByDescending { it.lastModified }
+                                    LibrarySort.NAME -> base.thenBy { it.visibleName.lowercase(Locale.US) }
+                                    LibrarySort.PAGES -> base.thenByDescending { maxOf(it.pages.size, it.pageCount) }
+                                }
                             }
-                            val folderPairs = folders.chunked(2)
-                            items(folderPairs) { pair ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
+                        filtered.sortedWith(comparator)
+                    }
+
+                    val (folders, nonFolders) = remember(filteredDocs) {
+                        filteredDocs.partition { it.isFolder }
+                    }
+
+                    val folderGridState = remember(targetFolderId) {
+                        activeGridStates.getOrPut(targetFolderId) { LazyGridState() }
+                    }
+                    val folderListState = remember(targetFolderId) {
+                        activeListStates.getOrPut(targetFolderId) { LazyListState() }
+                    }
+
+                    if (filteredDocs.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                                    modifier = Modifier.size(52.dp)
+                                )
+                                Text(
+                                    text = if (searchQuery.isNotBlank()) "No matching notes or documents" else "Folder is empty",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Tap + to create a note, record a meeting, or optimize a document",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    } else if (viewMode == LibraryViewMode.GRID) {
+                        LazyVerticalGrid(
+                            state = folderGridState,
+                            columns = GridCells.Adaptive(minSize = 148.dp),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (recentDocs.isNotEmpty()) {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    Column {
+                                        SectionHeader(title = "Jump Back In", count = recentDocs.size)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState())
+                                                .padding(bottom = 6.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            recentDocs.forEach { recent ->
+                                                RecentJumpCard(
+                                                    document = recent,
+                                                    onClick = { onOpenDocument(recent) },
+                                                    onLongClick = {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        contextMenuDoc = recent
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (folders.isNotEmpty()) {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    SectionHeader(title = "Folders", count = folders.size)
+                                }
+                                items(folders, key = { it.id }) { folder ->
                                     FolderGridCard(
-                                        folder = pair[0],
+                                        folder = folder,
                                         allDocuments = documents,
-                                        onClick = { onOpenFolder(pair[0].id) },
+                                        onClick = { onOpenFolder(folder.id) },
                                         onLongClick = {
                                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            contextMenuDoc = pair[0]
-                                        },
-                                        modifier = Modifier.weight(1f)
+                                            contextMenuDoc = folder
+                                        }
                                     )
-                                    if (pair.size > 1) {
-                                        FolderGridCard(
-                                            folder = pair[1],
-                                            allDocuments = documents,
-                                            onClick = { onOpenFolder(pair[1].id) },
+                                }
+                            }
+
+                            if (nonFolders.isNotEmpty()) {
+                                if (folders.isNotEmpty() || recentDocs.isNotEmpty()) {
+                                    item(span = { GridItemSpan(maxLineSpan) }) {
+                                        SectionHeader(
+                                            title = if (targetFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
+                                            count = nonFolders.size
+                                        )
+                                    }
+                                }
+                                items(nonFolders, key = { it.id }) { doc ->
+                                    val dismissState = rememberSwipeToDismissBoxState(
+                                        confirmValueChange = { dismissValue ->
+                                            if (dismissValue == SwipeToDismissBoxValue.EndToStart || dismissValue == SwipeToDismissBoxValue.StartToEnd) {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                documentPendingDelete = doc
+                                                false
+                                            } else false
+                                        }
+                                    )
+
+                                    SwipeToDismissBox(
+                                        state = dismissState,
+                                        enableDismissFromStartToEnd = true,
+                                        enableDismissFromEndToStart = true,
+                                        backgroundContent = {
+                                            val direction = dismissState.dismissDirection
+                                            val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(MaterialTheme.colorScheme.errorContainer)
+                                                    .padding(horizontal = 14.dp),
+                                                contentAlignment = alignment
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Delete",
+                                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                            }
+                                        }
+                                    ) {
+                                        DocumentGridCard(
+                                            document = doc,
+                                            blobStore = blobStore,
+                                            onClick = { onOpenDocument(doc) },
                                             onLongClick = {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                contextMenuDoc = pair[1]
+                                                contextMenuDoc = doc
+                                            },
+                                            onOptionsClick = {
+                                                contextMenuDoc = doc
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            state = folderListState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (recentDocs.isNotEmpty()) {
+                                item {
+                                    Column {
+                                        SectionHeader(title = "Jump Back In", count = recentDocs.size)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState())
+                                                .padding(bottom = 6.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            recentDocs.forEach { recent ->
+                                                RecentJumpCard(
+                                                    document = recent,
+                                                    onClick = { onOpenDocument(recent) },
+                                                    onLongClick = {
+                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                        contextMenuDoc = recent
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                    }
+                                }
+                            }
+
+                            if (folders.isNotEmpty()) {
+                                item {
+                                    SectionHeader(title = "Folders", count = folders.size)
+                                }
+                                val folderPairs = folders.chunked(2)
+                                items(folderPairs) { pair ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        FolderGridCard(
+                                            folder = pair[0],
+                                            allDocuments = documents,
+                                            onClick = { onOpenFolder(pair[0].id) },
+                                            onLongClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                contextMenuDoc = pair[0]
                                             },
                                             modifier = Modifier.weight(1f)
                                         )
-                                    } else {
-                                        Spacer(modifier = Modifier.weight(1f))
-                                    }
-                                }
-                            }
-                            if (nonFolders.isNotEmpty()) {
-                                item {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    SectionHeader(
-                                        title = if (currentFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
-                                        count = nonFolders.size
-                                    )
-                                }
-                            }
-                        }
-
-                        items(nonFolders, key = { it.id }) { doc ->
-                            val dismissState = rememberSwipeToDismissBoxState(
-                                confirmValueChange = { dismissValue ->
-                                    if (dismissValue == SwipeToDismissBoxValue.EndToStart || dismissValue == SwipeToDismissBoxValue.StartToEnd) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        documentPendingDelete = doc
-                                        false
-                                    } else false
-                                }
-                            )
-
-                            SwipeToDismissBox(
-                                state = dismissState,
-                                enableDismissFromStartToEnd = true,
-                                enableDismissFromEndToStart = true,
-                                backgroundContent = {
-                                    val direction = dismissState.dismissDirection
-                                    val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(MaterialTheme.colorScheme.errorContainer)
-                                            .padding(horizontal = 20.dp),
-                                        contentAlignment = alignment
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "Delete",
-                                                tint = MaterialTheme.colorScheme.onErrorContainer
+                                        if (pair.size > 1) {
+                                            FolderGridCard(
+                                                folder = pair[1],
+                                                allDocuments = documents,
+                                                onClick = { onOpenFolder(pair[1].id) },
+                                                onLongClick = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    contextMenuDoc = pair[1]
+                                                },
+                                                modifier = Modifier.weight(1f)
                                             )
-                                            Text(
-                                                text = "Delete",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onErrorContainer
-                                            )
+                                        } else {
+                                            Spacer(modifier = Modifier.weight(1f))
                                         }
                                     }
                                 }
-                            ) {
-                                DocumentCard(
-                                    document = doc,
-                                    blobStore = blobStore,
-                                    onClick = { onOpenDocument(doc) },
-                                    onLongClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        contextMenuDoc = doc
-                                    },
-                                    onOptionsClick = {
-                                        contextMenuDoc = doc
+                                if (nonFolders.isNotEmpty()) {
+                                    item {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        SectionHeader(
+                                            title = if (targetFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
+                                            count = nonFolders.size
+                                        )
+                                    }
+                                }
+                            }
+
+                            items(nonFolders, key = { it.id }) { doc ->
+                                val dismissState = rememberSwipeToDismissBoxState(
+                                    confirmValueChange = { dismissValue ->
+                                        if (dismissValue == SwipeToDismissBoxValue.EndToStart || dismissValue == SwipeToDismissBoxValue.StartToEnd) {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            documentPendingDelete = doc
+                                            false
+                                        } else false
                                     }
                                 )
+
+                                SwipeToDismissBox(
+                                    state = dismissState,
+                                    enableDismissFromStartToEnd = true,
+                                    enableDismissFromEndToStart = true,
+                                    backgroundContent = {
+                                        val direction = dismissState.dismissDirection
+                                        val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .clip(RoundedCornerShape(12.dp))
+                                                .background(MaterialTheme.colorScheme.errorContainer)
+                                                .padding(horizontal = 20.dp),
+                                            contentAlignment = alignment
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "Delete",
+                                                    tint = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                                Text(
+                                                    text = "Delete",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                                )
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    DocumentCard(
+                                        document = doc,
+                                        blobStore = blobStore,
+                                        onClick = { onOpenDocument(doc) },
+                                        onLongClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            contextMenuDoc = doc
+                                        },
+                                        onOptionsClick = {
+                                            contextMenuDoc = doc
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1470,7 +1572,8 @@ fun DocumentGridCard(
     document: DocumentItem,
     blobStore: BlobStore? = null,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    onOptionsClick: (() -> Unit)? = null
 ) {
     var coverThumb by remember(document.id, document.hash) { mutableStateOf<Bitmap?>(null) }
 
@@ -1550,25 +1653,45 @@ fun DocumentGridCard(
                 }
             }
 
-            Column(
-                modifier = Modifier.padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 10.dp, end = if (onOptionsClick != null) 4.dp else 10.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = document.visibleName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = if (document.isFolder) "Folder" else "${maxOf(document.pages.size, document.pageCount)} pgs • ${formatRelativeDate(document.lastModified)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = document.visibleName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = if (document.isFolder) "Folder" else "${maxOf(document.pages.size, document.pageCount)} pgs • ${formatRelativeDate(document.lastModified)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (onOptionsClick != null) {
+                    IconButton(
+                        onClick = onOptionsClick,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Options",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
             }
         }
     }
