@@ -15,7 +15,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,11 +41,6 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
-enum class MeetingModeTab {
-    LIVE_RECORD,
-    GOOGLE_MEET_IMPORT
-}
-
 @Composable
 fun MeetingRecorderDialog(
     repository: PersistentDocumentRepository,
@@ -56,8 +50,6 @@ fun MeetingRecorderDialog(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-
-    var activeTab by remember { mutableStateOf(MeetingModeTab.LIVE_RECORD) }
 
     val defaultTitle = remember {
         val dateStr = SimpleDateFormat("EEEE, MMM d • h:mm a", Locale.US).format(Date())
@@ -74,21 +66,31 @@ fun MeetingRecorderDialog(
     var accumulatedTranscript by remember { mutableStateOf("") }
     var livePartialText by remember { mutableStateOf("") }
     var recordedAudioFile by remember { mutableStateOf<File?>(null) }
-
-    // Google Meet Import State
-    var googleMeetText by remember { mutableStateOf("") }
-
     var isCreatingNotebook by remember { mutableStateOf(false) }
+
+    var hasMicPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        )
+    }
 
     // Permission launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
+        hasMicPermission = isGranted
         if (isGranted) {
             isRecording = true
             engine.startRecording(meetingTitle)
         } else {
-            Toast.makeText(context, "Microphone permission is required to record meetings.", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Microphone permission is required to record & transcribe meetings.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Auto-prompt permission on open if not yet granted
+    LaunchedEffect(Unit) {
+        if (!hasMicPermission) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -103,6 +105,9 @@ fun MeetingRecorderDialog(
         }
         engine.onDurationTick = { sec ->
             durationSeconds = sec
+        }
+        engine.onErrorOccurred = { err ->
+            Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -183,28 +188,6 @@ fun MeetingRecorderDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Tabs: Live Record vs Google Meet Import
-                TabRow(
-                    selectedTabIndex = activeTab.ordinal,
-                    containerColor = Color.Transparent,
-                    contentColor = MaterialTheme.colorScheme.primary
-                ) {
-                    Tab(
-                        selected = activeTab == MeetingModeTab.LIVE_RECORD,
-                        onClick = { activeTab = MeetingModeTab.LIVE_RECORD },
-                        text = { Text("Live Audio & Transcription") },
-                        icon = { Icon(Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.size(18.dp)) }
-                    )
-                    Tab(
-                        selected = activeTab == MeetingModeTab.GOOGLE_MEET_IMPORT,
-                        onClick = { activeTab = MeetingModeTab.GOOGLE_MEET_IMPORT },
-                        text = { Text("Google Meet Import") },
-                        icon = { Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(18.dp)) }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
                 // Meeting Title
                 OutlinedTextField(
                     value = meetingTitle,
@@ -214,232 +197,239 @@ fun MeetingRecorderDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
-                when (activeTab) {
-                    MeetingModeTab.LIVE_RECORD -> {
-                        // Live Audio & Voice Transcription View
-                        Surface(
-                            color = Zinc900,
-                            shape = RoundedCornerShape(16.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Zinc800),
-                            modifier = Modifier.fillMaxWidth()
+                // Microphone Permission Banner (if not yet granted)
+                if (!hasMicPermission) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                // Status Bar: Pulsing indicator & Timer
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (isRecording) {
-                                            val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-                                            val scale by infiniteTransition.animateFloat(
-                                                initialValue = 0.8f,
-                                                targetValue = 1.3f,
-                                                animationSpec = infiniteRepeatable(
-                                                    animation = tween(600, easing = FastOutSlowInEasing),
-                                                    repeatMode = RepeatMode.Reverse
-                                                ),
-                                                label = "scale"
-                                            )
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(12.dp)
-                                                    .scale(scale)
-                                                    .background(Color(0xFFEF4444), CircleShape)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "RECORDING & TRANSCRIBING",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFFEF4444)
-                                            )
-                                        } else {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(10.dp)
-                                                    .background(Color(0xFF71717A), CircleShape)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "MIC READY",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color(0xFFA1A1AA)
-                                            )
-                                        }
-                                    }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                                Text(
+                                    text = "Microphone Permission Needed",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                            Text(
+                                text = "Android requires your permission to access the microphone for live meeting audio recording and voice transcription.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Button(
+                                onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                )
+                            ) {
+                                Icon(Icons.Default.LockOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Grant Microphone Permission")
+                            }
+                        }
+                    }
 
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                // Live Audio & Voice Transcription View
+                Surface(
+                    color = Zinc900,
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Zinc800),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        // Status Bar: Pulsing indicator & Timer
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isRecording) {
+                                    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                                    val scale by infiniteTransition.animateFloat(
+                                        initialValue = 0.8f,
+                                        targetValue = 1.3f,
+                                        animationSpec = infiniteRepeatable(
+                                            animation = tween(600, easing = FastOutSlowInEasing),
+                                            repeatMode = RepeatMode.Reverse
+                                        ),
+                                        label = "scale"
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(12.dp)
+                                            .scale(scale)
+                                            .background(Color(0xFFEF4444), CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = MeetingRecorderEngine.formatDuration(durationSeconds),
-                                        style = MaterialTheme.typography.titleMedium,
+                                        text = "RECORDING & TRANSCRIBING",
+                                        style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color.White
+                                        color = Color(0xFFEF4444)
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .background(Color(0xFF71717A), CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (hasMicPermission) "MIC READY" else "MIC WAITING",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFA1A1AA)
                                     )
                                 }
+                            }
 
-                                Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = MeetingRecorderEngine.formatDuration(durationSeconds),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
 
-                                // Sound Waveform Bars Animation
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(36.dp),
-                                    horizontalArrangement = Arrangement.SpaceEvenly,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    val barCount = 20
-                                    for (i in 0 until barCount) {
-                                        val factor = if (isRecording) {
-                                            ((Math.sin((i.toDouble() + (durationSeconds * 2)) * 0.8).toFloat() + 1.2f) * rmsVolume * 0.5f).coerceIn(0.1f, 1.0f)
-                                        } else {
-                                            0.1f
-                                        }
-                                        Box(
-                                            modifier = Modifier
-                                                .width(4.dp)
-                                                .fillMaxHeight(factor)
-                                                .background(
-                                                    if (isRecording) Color(0xFF3B82F6) else Color(0xFF3F3F46),
-                                                    RoundedCornerShape(2.dp)
-                                                )
-                                        )
-                                    }
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Sound Waveform Bars Animation
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val barCount = 20
+                            for (i in 0 until barCount) {
+                                val factor = if (isRecording) {
+                                    ((Math.sin((i.toDouble() + (durationSeconds * 2)) * 0.8).toFloat() + 1.2f) * rmsVolume * 0.5f).coerceIn(0.1f, 1.0f)
+                                } else {
+                                    0.1f
                                 }
-
-                                Spacer(modifier = Modifier.height(12.dp))
-
-                                // Live Transcript Box
-                                Text(
-                                    text = "Live Meeting Transcript",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFFA1A1AA)
-                                )
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 100.dp, max = 180.dp)
-                                        .padding(top = 4.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0xFF18181B))
-                                        .border(1.dp, Color(0xFF27272A), RoundedCornerShape(8.dp))
-                                        .padding(10.dp)
-                                        .verticalScroll(rememberScrollState())
-                                ) {
-                                    val displayString = buildString {
-                                        if (accumulatedTranscript.isNotBlank()) {
-                                            append(accumulatedTranscript)
-                                        }
-                                        if (livePartialText.isNotBlank()) {
-                                            if (isNotEmpty()) append(" ")
-                                            append("⏳ $livePartialText...")
-                                        }
-                                    }
-
-                                    if (displayString.isBlank()) {
-                                        Text(
-                                            text = if (isRecording) "Listening... Speak naturally." else "Press Start Recording to begin live speech-to-text.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF71717A)
+                                        .width(4.dp)
+                                        .fillMaxHeight(factor)
+                                        .background(
+                                            if (isRecording) Color(0xFF3B82F6) else Color(0xFF3F3F46),
+                                            RoundedCornerShape(2.dp)
                                         )
-                                    } else {
-                                        Text(
-                                            text = displayString,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFFF4F4F5),
-                                            lineHeight = MaterialTheme.typography.bodySmall.lineHeight
-                                        )
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.height(14.dp))
-
-                                // Recording Toggle Button
-                                if (!isRecording) {
-                                    Button(
-                                        onClick = {
-                                            val hasPermission = ContextCompat.checkSelfPermission(
-                                                context,
-                                                Manifest.permission.RECORD_AUDIO
-                                            ) == PackageManager.PERMISSION_GRANTED
-
-                                            if (hasPermission) {
-                                                isRecording = true
-                                                engine.startRecording(meetingTitle)
-                                            } else {
-                                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                            }
-                                        },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Icon(Icons.Default.Mic, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Start Meeting Recording")
-                                    }
-                                } else {
-                                    OutlinedButton(
-                                        onClick = {
-                                            val result = engine.stopRecording()
-                                            isRecording = false
-                                            recordedAudioFile = result.audioFile
-                                            accumulatedTranscript = result.transcript
-                                        },
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Icon(Icons.Default.Stop, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Stop Recording")
-                                    }
-                                }
+                                )
                             }
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Agenda / Objectives Input
-                        OutlinedTextField(
-                            value = userAgenda,
-                            onValueChange = { userAgenda = it },
-                            label = { Text("Agenda / Key Objectives (Optional)") },
-                            placeholder = { Text("e.g. Q4 roadmap priorities and release deadline") },
-                            modifier = Modifier.fillMaxWidth()
+                        // Live Transcript Box
+                        Text(
+                            text = "Live Meeting Transcript",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFA1A1AA)
                         )
-                    }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 120.dp, max = 220.dp)
+                                .padding(top = 4.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF18181B))
+                                .border(1.dp, Color(0xFF27272A), RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            val displayString = buildString {
+                                if (accumulatedTranscript.isNotBlank()) {
+                                    append(accumulatedTranscript)
+                                }
+                                if (livePartialText.isNotBlank()) {
+                                    if (isNotEmpty()) append(" ")
+                                    append("⏳ $livePartialText...")
+                                }
+                            }
 
-                    MeetingModeTab.GOOGLE_MEET_IMPORT -> {
-                        // Google Meet Transcript Import View
-                        Column {
-                            Text(
-                                text = "Paste Google Meet Transcript or Captions",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = "Download the transcript from Google Meet or copy captions directly. It will be formatted onto Page 2+ of your reMarkable notebook.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            if (displayString.isBlank()) {
+                                Text(
+                                    text = if (isRecording) "Listening... Speak naturally." else "Press Start Recording to begin live speech-to-text.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF71717A)
+                                )
+                            } else {
+                                Text(
+                                    text = displayString,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFFF4F4F5),
+                                    lineHeight = MaterialTheme.typography.bodySmall.lineHeight
+                                )
+                            }
+                        }
 
-                            Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
 
-                            OutlinedTextField(
-                                value = googleMeetText,
-                                onValueChange = { googleMeetText = it },
-                                placeholder = {
-                                    Text("00:01 Alex: Let's begin the review...\n00:05 Sarah: The mobile app companion is ready...")
+                        // Recording Toggle Button
+                        if (!isRecording) {
+                            Button(
+                                onClick = {
+                                    if (hasMicPermission) {
+                                        isRecording = true
+                                        engine.startRecording(meetingTitle)
+                                    } else {
+                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
                                 },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(200.dp)
-                            )
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Mic, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Start Meeting Recording")
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    val result = engine.stopRecording()
+                                    isRecording = false
+                                    recordedAudioFile = result.audioFile
+                                    accumulatedTranscript = result.transcript
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Stop, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Stop Recording")
+                            }
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Agenda / Personal Notes Input (Included on Page 1)
+                OutlinedTextField(
+                    value = userAgenda,
+                    onValueChange = { userAgenda = it },
+                    label = { Text("Agenda / My Meeting Notes (Included on Page 1)") },
+                    placeholder = { Text("e.g. Key decisions, action items, and personal notes") },
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Spacer(modifier = Modifier.height(20.dp))
 
@@ -456,19 +446,13 @@ fun MeetingRecorderDialog(
                                     accumulatedTranscript = res.transcript
                                 }
 
-                                val finalTranscript = if (activeTab == MeetingModeTab.GOOGLE_MEET_IMPORT) {
-                                    googleMeetText
-                                } else {
-                                    accumulatedTranscript
-                                }
-
                                 val notebook = MeetingNotebookGenerator.generateMeetingNotebook(
                                     repository = repository,
                                     blobStore = blobStore,
                                     meetingTitle = meetingTitle,
                                     durationSeconds = durationSeconds,
                                     userAgenda = userAgenda,
-                                    transcriptText = finalTranscript,
+                                    transcriptText = accumulatedTranscript,
                                     audioFile = recordedAudioFile
                                 )
 

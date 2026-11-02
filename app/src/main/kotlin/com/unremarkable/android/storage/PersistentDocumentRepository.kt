@@ -127,6 +127,13 @@ class PersistentDocumentRepository(
         }
     }
 
+    fun removeDocument(id: String) {
+        synchronized(lock) {
+            docsMap.remove(id)
+            persistToDisk()
+        }
+    }
+
     override fun getAllDocuments(): List<DocumentItem> = synchronized(lock) {
         docsMap.values.filter { !it.deleted }
             .sortedWith(

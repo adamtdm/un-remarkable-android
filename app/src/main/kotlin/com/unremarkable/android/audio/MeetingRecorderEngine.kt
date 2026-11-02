@@ -38,6 +38,7 @@ class MeetingRecorderEngine(private val context: Context) {
     var onTranscriptChanged: ((fullTranscript: String, livePartial: String) -> Unit)? = null
     var onRmsChanged: ((Float) -> Unit)? = null
     var onDurationTick: ((Long) -> Unit)? = null
+    var onErrorOccurred: ((String) -> Unit)? = null
 
     fun isSpeechRecognitionAvailable(): Boolean {
         return SpeechRecognizer.isRecognitionAvailable(context)
@@ -50,7 +51,28 @@ class MeetingRecorderEngine(private val context: Context) {
         accumulatedTranscript.clear()
         currentPartialText = ""
 
-        // 1. Setup audio output file and MediaRecorder
+        val speechAvailable = isSpeechRecognitionAvailable()
+
+        if (speechAvailable) {
+            // Live speech-to-text mode: let SpeechRecognizer manage mic without hardware lock contention
+            startSpeechListeningSession()
+        } else {
+            // Fallback audio file recorder mode if SpeechRecognizer is unavailable
+            startMediaRecorderFallback(title)
+        }
+
+        // Duration Timer
+        timerJob?.cancel()
+        timerJob = scope.launch {
+            while (isRecording) {
+                delay(1000)
+                durationSeconds = (System.currentTimeMillis() - startTimeMillis) / 1000
+                onDurationTick?.invoke(durationSeconds)
+            }
+        }
+    }
+
+    private fun startMediaRecorderFallback(title: String) {
         try {
             val audioDir = File(context.filesDir, "recordings")
             if (!audioDir.exists()) audioDir.mkdirs()
@@ -77,22 +99,9 @@ class MeetingRecorderEngine(private val context: Context) {
                 start()
             }
             mediaRecorder = recorder
-        } catch (_: Exception) {
-            // If MediaRecorder fails (e.g. in test env or missing mic hardware), continue gracefully with speech recognizer
+        } catch (e: Exception) {
             mediaRecorder = null
-        }
-
-        // 2. Setup SpeechRecognizer for Live Streaming Voice-to-Text
-        startSpeechListeningSession()
-
-        // 3. Duration Timer
-        timerJob?.cancel()
-        timerJob = scope.launch {
-            while (isRecording) {
-                delay(1000)
-                durationSeconds = (System.currentTimeMillis() - startTimeMillis) / 1000
-                onDurationTick?.invoke(durationSeconds)
-            }
+            onErrorOccurred?.invoke("Media recorder error: ${e.message}")
         }
     }
 
@@ -107,7 +116,6 @@ class MeetingRecorderEngine(private val context: Context) {
                     override fun onBeginningOfSpeech() {}
 
                     override fun onRmsChanged(rmsdB: Float) {
-                        // Normalize -2dB..10dB to 0.0..1.0
                         val norm = ((rmsdB + 2f) / 12f).coerceIn(0.05f, 1.0f)
                         onRmsChanged?.invoke(norm)
                     }
@@ -116,11 +124,32 @@ class MeetingRecorderEngine(private val context: Context) {
                     override fun onEndOfSpeech() {}
 
                     override fun onError(error: Int) {
-                        // On pause or error, seamlessly restart listening if recording is still active
+                        val errorMsg = when (error) {
+                            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error"
+                            SpeechRecognizer.ERROR_CLIENT -> "Client error"
+                            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission required"
+                            SpeechRecognizer.ERROR_NETWORK -> "Network error"
+                            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout"
+                            SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized"
+                            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech service busy"
+                            SpeechRecognizer.ERROR_SERVER -> "Speech server error"
+                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech input"
+                            else -> "Recognition error: $error"
+                        }
+
+                        if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                            onErrorOccurred?.invoke(errorMsg)
+                            return
+                        }
+
+                        // Seamlessly continue listening on routine pause / silence / busy
                         if (isRecording) {
                             scope.launch {
-                                delay(300)
-                                startSpeechListeningSession()
+                                val restartDelay = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 800L else 400L
+                                delay(restartDelay)
+                                if (isRecording) {
+                                    startSpeechListeningSession()
+                                }
                             }
                         }
                     }
@@ -161,8 +190,8 @@ class MeetingRecorderEngine(private val context: Context) {
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             }
             speechRecognizer?.startListening(intent)
-        } catch (_: Exception) {
-            // Speech recognizer fallback
+        } catch (e: Exception) {
+            onErrorOccurred?.invoke("Speech listening error: ${e.message}")
         }
     }
 

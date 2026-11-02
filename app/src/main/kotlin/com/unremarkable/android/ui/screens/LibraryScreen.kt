@@ -4,9 +4,11 @@ import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -36,7 +38,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -97,14 +101,29 @@ fun LibraryScreen(
     onOpenConverter: () -> Unit,
     onOpenSettings: () -> Unit = {},
     onOpenMeetingRecorder: () -> Unit = {},
+    onDeleteDocument: (DocumentItem) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val haptic = LocalHapticFeedback.current
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf(DocumentFilter.ALL) }
     var sortMode by remember { mutableStateOf(LibrarySort.MODIFIED) }
     var viewMode by remember { mutableStateOf(LibraryViewMode.LIST) }
     var showSortMenu by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
+    var documentPendingDelete by remember { mutableStateOf<DocumentItem?>(null) }
+    var contextMenuDoc by remember { mutableStateOf<DocumentItem?>(null) }
+
+    val recentDocs = remember(documents, currentFolderId, searchQuery, selectedFilter) {
+        if (currentFolderId.isEmpty() && searchQuery.isBlank() && selectedFilter == DocumentFilter.ALL) {
+            documents
+                .filter { !it.isFolder && it.parent != "trash" }
+                .sortedByDescending { it.lastModified }
+                .take(4)
+        } else {
+            emptyList()
+        }
+    }
 
     val searchFocusRequester = remember { FocusRequester() }
     LaunchedEffect(focusSearchTrigger) {
@@ -572,6 +591,32 @@ fun LibraryScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        if (recentDocs.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Column {
+                                    SectionHeader(title = "Jump Back In", count = recentDocs.size)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .padding(bottom = 6.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        recentDocs.forEach { recent ->
+                                            RecentJumpCard(
+                                                document = recent,
+                                                onClick = { onOpenDocument(recent) },
+                                                onLongClick = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    contextMenuDoc = recent
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if (folders.isNotEmpty()) {
                             item(span = { GridItemSpan(maxLineSpan) }) {
                                 SectionHeader(title = "Folders", count = folders.size)
@@ -580,12 +625,17 @@ fun LibraryScreen(
                                 FolderGridCard(
                                     folder = folder,
                                     allDocuments = documents,
-                                    onClick = { onOpenFolder(folder.id) }
+                                    onClick = { onOpenFolder(folder.id) },
+                                    onLongClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        contextMenuDoc = folder
+                                    }
                                 )
                             }
                         }
+
                         if (nonFolders.isNotEmpty()) {
-                            if (folders.isNotEmpty()) {
+                            if (folders.isNotEmpty() || recentDocs.isNotEmpty()) {
                                 item(span = { GridItemSpan(maxLineSpan) }) {
                                     SectionHeader(
                                         title = if (currentFolderId.isEmpty()) "Notebooks & Documents" else "Documents",
@@ -597,7 +647,11 @@ fun LibraryScreen(
                                 DocumentGridCard(
                                     document = doc,
                                     blobStore = blobStore,
-                                    onClick = { onOpenDocument(doc) }
+                                    onClick = { onOpenDocument(doc) },
+                                    onLongClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        contextMenuDoc = doc
+                                    }
                                 )
                             }
                         }
@@ -608,6 +662,33 @@ fun LibraryScreen(
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 96.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        if (recentDocs.isNotEmpty()) {
+                            item {
+                                Column {
+                                    SectionHeader(title = "Jump Back In", count = recentDocs.size)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .padding(bottom = 6.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        recentDocs.forEach { recent ->
+                                            RecentJumpCard(
+                                                document = recent,
+                                                onClick = { onOpenDocument(recent) },
+                                                onLongClick = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    contextMenuDoc = recent
+                                                }
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                }
+                            }
+                        }
+
                         if (folders.isNotEmpty()) {
                             item {
                                 SectionHeader(title = "Folders", count = folders.size)
@@ -622,6 +703,10 @@ fun LibraryScreen(
                                         folder = pair[0],
                                         allDocuments = documents,
                                         onClick = { onOpenFolder(pair[0].id) },
+                                        onLongClick = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            contextMenuDoc = pair[0]
+                                        },
                                         modifier = Modifier.weight(1f)
                                     )
                                     if (pair.size > 1) {
@@ -629,6 +714,10 @@ fun LibraryScreen(
                                             folder = pair[1],
                                             allDocuments = documents,
                                             onClick = { onOpenFolder(pair[1].id) },
+                                            onLongClick = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                contextMenuDoc = pair[1]
+                                            },
                                             modifier = Modifier.weight(1f)
                                         )
                                     } else {
@@ -646,15 +735,215 @@ fun LibraryScreen(
                                 }
                             }
                         }
+
                         items(nonFolders, key = { it.id }) { doc ->
-                            DocumentCard(
-                                document = doc,
-                                blobStore = blobStore,
-                                onClick = { onOpenDocument(doc) }
+                            val dismissState = rememberSwipeToDismissBoxState(
+                                confirmValueChange = { dismissValue ->
+                                    if (dismissValue == SwipeToDismissBoxValue.EndToStart || dismissValue == SwipeToDismissBoxValue.StartToEnd) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        documentPendingDelete = doc
+                                        false
+                                    } else false
+                                }
                             )
+
+                            SwipeToDismissBox(
+                                state = dismissState,
+                                enableDismissFromStartToEnd = true,
+                                enableDismissFromEndToStart = true,
+                                backgroundContent = {
+                                    val direction = dismissState.dismissDirection
+                                    val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(MaterialTheme.colorScheme.errorContainer)
+                                            .padding(horizontal = 20.dp),
+                                        contentAlignment = alignment
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Delete,
+                                                contentDescription = "Delete",
+                                                tint = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                            Text(
+                                                text = "Delete",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onErrorContainer
+                                            )
+                                        }
+                                    }
+                                }
+                            ) {
+                                DocumentCard(
+                                    document = doc,
+                                    blobStore = blobStore,
+                                    onClick = { onOpenDocument(doc) },
+                                    onLongClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        contextMenuDoc = doc
+                                    },
+                                    onOptionsClick = {
+                                        contextMenuDoc = doc
+                                    }
+                                )
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Delete Confirmation Dialog
+    if (documentPendingDelete != null) {
+        val docToDelete = documentPendingDelete!!
+        AlertDialog(
+            onDismissRequest = { documentPendingDelete = null },
+            icon = {
+                Icon(
+                    Icons.Default.DeleteOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = if (docToDelete.isFolder) "Delete Folder?" else "Delete Document?",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Text(
+                    text = "Are you sure you want to delete \"${docToDelete.visibleName}\"? This item will be moved to trash.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteDocument(docToDelete)
+                        documentPendingDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { documentPendingDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Context Menu Bottom Sheet
+    if (contextMenuDoc != null) {
+        val doc = contextMenuDoc!!
+        ModalBottomSheet(
+            onDismissRequest = { contextMenuDoc = null },
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 36.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (doc.isFolder) Icons.Default.Folder else Icons.Default.EditNote,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = doc.visibleName,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (doc.isFolder) "Folder" else "${maxOf(doc.pages.size, doc.pageCount)} pages • ${formatRelativeDate(doc.lastModified)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+
+                ListItem(
+                    headlineContent = { Text(if (doc.isFolder) "Open Folder" else "Open & Read") },
+                    leadingContent = {
+                        Icon(if (doc.isFolder) Icons.Default.FolderOpen else Icons.Default.AutoStories, contentDescription = null)
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            contextMenuDoc = null
+                            if (doc.isFolder) onOpenFolder(doc.id) else onOpenDocument(doc)
+                        }
+                )
+
+                if (!doc.isFolder) {
+                    ListItem(
+                        headlineContent = { Text("Optimize for reMarkable") },
+                        leadingContent = {
+                            Icon(Icons.Default.FlashOn, contentDescription = null)
+                        },
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                contextMenuDoc = null
+                                onOpenConverter()
+                            }
+                    )
+                }
+
+                ListItem(
+                    headlineContent = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                    leadingContent = {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    },
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable {
+                            val target = doc
+                            contextMenuDoc = null
+                            documentPendingDelete = target
+                        }
+                )
             }
         }
     }
@@ -812,11 +1101,73 @@ private fun SectionHeader(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun RecentJumpCard(
+    document: DocumentItem,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = Modifier
+            .width(190.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+    ) {
+        Row(
+            modifier = Modifier.padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.size(38.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    val icon = when {
+                        document.fileType == "pdf" -> Icons.Default.PictureAsPdf
+                        document.fileType == "epub" -> Icons.Default.Book
+                        else -> Icons.Default.EditNote
+                    }
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = document.visibleName,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = formatRelativeDate(document.lastModified),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FolderGridCard(
     folder: DocumentItem,
     allDocuments: List<DocumentItem>,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val childCount = remember(folder.id, allDocuments) {
@@ -829,7 +1180,10 @@ fun FolderGridCard(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Column {
             // Folder Thumbnail Box (16:10 aspect ratio matching container app .doc-card-folder)
@@ -909,11 +1263,14 @@ fun FolderGridCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DocumentCard(
     document: DocumentItem,
     blobStore: BlobStore? = null,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    onOptionsClick: (() -> Unit)? = null
 ) {
     var coverThumb by remember(document.id, document.hash) { mutableStateOf<Bitmap?>(null) }
 
@@ -965,7 +1322,10 @@ fun DocumentCard(
         ),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Row(
             modifier = Modifier
@@ -1080,21 +1440,37 @@ fun DocumentCard(
                 }
             }
 
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                modifier = Modifier.size(18.dp)
-            )
+            if (onOptionsClick != null) {
+                IconButton(
+                    onClick = onOptionsClick,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Options",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            } else {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DocumentGridCard(
     document: DocumentItem,
     blobStore: BlobStore? = null,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
 ) {
     var coverThumb by remember(document.id, document.hash) { mutableStateOf<Bitmap?>(null) }
 
@@ -1143,7 +1519,10 @@ fun DocumentGridCard(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
     ) {
         Column {
             Box(

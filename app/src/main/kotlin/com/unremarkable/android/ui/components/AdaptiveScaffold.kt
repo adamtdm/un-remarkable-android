@@ -20,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -62,6 +63,7 @@ fun AdaptiveScaffold(
     cloudClient: RMCloudClient? = null,
     initialIsSidebarMinimized: Boolean = false,
     onSidebarMinimizedChanged: ((Boolean) -> Unit)? = null,
+    onDeleteDocument: (DocumentItem) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
@@ -89,9 +91,37 @@ fun AdaptiveScaffold(
         label = "SidebarWidth"
     )
 
-    if (isFoldableOrExpanded) {
-        // Dual-Pane Layout for Foldable / Tablet
-        Row(modifier = modifier.fillMaxSize()) {
+    val keyModifier = Modifier.onPreviewKeyEvent { event ->
+        if (event.type == KeyEventType.KeyDown) {
+            if (event.isCtrlPressed || event.isMetaPressed) {
+                when (event.key) {
+                    Key.F -> {
+                        setSidebarModeState(SidebarMode.EXPANDED)
+                        focusSearchTrigger = System.currentTimeMillis()
+                        true
+                    }
+                    Key.N -> {
+                        onQuickCapture()
+                        true
+                    }
+                    Key.R -> {
+                        onSyncNow()
+                        true
+                    }
+                    else -> false
+                }
+            } else if (event.key == Key.Escape) {
+                if (selectedDocument != null) {
+                    onSelectDocument(null)
+                    true
+                } else false
+            } else false
+        } else false
+    }
+
+    if (isFoldableOrExpanded && selectedDocument != null) {
+        // Dual-Pane Layout when reading/writing a document on Foldable / Tablet
+        Row(modifier = modifier.fillMaxSize().then(keyModifier)) {
             // Sidebar Region
             if (sidebarMode != SidebarMode.FULLSCREEN) {
                 Box(
@@ -114,6 +144,7 @@ fun AdaptiveScaffold(
                             onOpenConverter = onOpenConverter,
                             onOpenSettings = onOpenSettings,
                             onOpenMeetingRecorder = onOpenMeetingRecorder,
+                            onDeleteDocument = onDeleteDocument,
                             isFoldable = true,
                             focusSearchTrigger = focusSearchTrigger,
                             onMinimizeSidebar = { setSidebarModeState(SidebarMode.MINIMIZED_RAIL) },
@@ -163,7 +194,7 @@ fun AdaptiveScaffold(
                                 }
                             ) {
                                 NavigationRailItem(
-                                    selected = selectedDocument == null && currentFolderId.isEmpty(),
+                                    selected = currentFolderId.isEmpty(),
                                     onClick = {
                                         onOpenFolder("")
                                         onSelectDocument(null)
@@ -227,138 +258,35 @@ fun AdaptiveScaffold(
                 VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
             }
 
-            // Right Pane (Reader Canvas or Placeholder)
+            // Right Pane (Reader Canvas)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
                     .background(MaterialTheme.colorScheme.background)
             ) {
-                if (selectedDocument != null) {
-                    ReaderScreen(
-                        document = selectedDocument,
-                        allDocuments = documents,
-                        blobStore = blobStore,
-                        annotationStore = annotationStore,
-                        cloudClient = cloudClient,
-                        isFoldable = true,
-                        isFullscreen = sidebarMode == SidebarMode.FULLSCREEN,
-                        onToggleFullscreen = {
-                            setSidebarModeState(
-                                if (sidebarMode == SidebarMode.FULLSCREEN) {
-                                    SidebarMode.EXPANDED
-                                } else {
-                                    SidebarMode.FULLSCREEN
-                                }
-                            )
-                        },
-                        onSelectDocument = onSelectDocument,
-                        onOpenMeetingRecorder = onOpenMeetingRecorder,
-                        onOptimizeCurrentPdf = onOptimizeCurrentPdf,
-                        onBack = { onSelectDocument(null) }
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.background),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Surface(
-                            color = MaterialTheme.colorScheme.surface,
-                            shape = RoundedCornerShape(14.dp),
-                            border = androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline
-                            ),
-                            modifier = Modifier
-                                .padding(24.dp)
-                                .widthIn(max = 380.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(28.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    shape = CircleShape,
-                                    modifier = Modifier.size(56.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            imageVector = Icons.Default.AutoStories,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = "Ready to Read & Write",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    softWrap = false
-                                )
-                                Text(
-                                    text = "Foldable dual-pane active. Select any document from the left pane, or collapse the menu to a single-column rail.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                )
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(top = 8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Button(
-                                        onClick = onQuickCapture,
-                                        shape = RoundedCornerShape(10.dp),
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = MaterialTheme.colorScheme.primary,
-                                            contentColor = MaterialTheme.colorScheme.onPrimary
-                                        )
-                                    ) {
-                                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("New Note (Quick Capture)", maxLines = 1, softWrap = false)
-                                    }
-                                    OutlinedButton(
-                                        onClick = { setSidebarModeState(SidebarMode.MINIMIZED_RAIL) },
-                                        shape = RoundedCornerShape(10.dp),
-                                        modifier = Modifier.fillMaxWidth(),
-                                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-                                    ) {
-                                        Icon(Icons.AutoMirrored.Filled.ViewSidebar, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Collapse to Rail", maxLines = 1, softWrap = false)
-                                    }
-                                }
+                ReaderScreen(
+                    document = selectedDocument,
+                    allDocuments = documents,
+                    blobStore = blobStore,
+                    annotationStore = annotationStore,
+                    cloudClient = cloudClient,
+                    isFoldable = true,
+                    isFullscreen = sidebarMode == SidebarMode.FULLSCREEN,
+                    onToggleFullscreen = {
+                        setSidebarModeState(
+                            if (sidebarMode == SidebarMode.FULLSCREEN) {
+                                SidebarMode.EXPANDED
+                            } else {
+                                SidebarMode.FULLSCREEN
                             }
-                        }
-                    }
-                }
-
-                // If in fullscreen on placeholder screen, floating pill to restore sidebar
-                if (sidebarMode == SidebarMode.FULLSCREEN && selectedDocument == null) {
-                    FloatingActionButton(
-                        onClick = { setSidebarModeState(SidebarMode.EXPANDED) },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(16.dp),
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f),
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    ) {
-                        Icon(Icons.Default.Menu, contentDescription = "Restore Menu")
-                    }
-                }
+                        )
+                    },
+                    onSelectDocument = onSelectDocument,
+                    onOpenMeetingRecorder = onOpenMeetingRecorder,
+                    onOptimizeCurrentPdf = onOptimizeCurrentPdf,
+                    onBack = { onSelectDocument(null) }
+                )
 
                 // Global Favorites Shelf overlay
                 FavoritesShelf(
@@ -372,45 +300,47 @@ fun AdaptiveScaffold(
                 )
             }
         }
+    } else if (selectedDocument != null) {
+        // Single-Pane Phone Layout (Reader Screen)
+        ReaderScreen(
+            document = selectedDocument,
+            allDocuments = documents,
+            blobStore = blobStore,
+            annotationStore = annotationStore,
+            cloudClient = cloudClient,
+            isFoldable = false,
+            isFullscreen = false,
+            onSelectDocument = onSelectDocument,
+            onOpenMeetingRecorder = onOpenMeetingRecorder,
+            onOptimizeCurrentPdf = onOptimizeCurrentPdf,
+            onBack = { onSelectDocument(null) },
+            modifier = modifier.then(keyModifier)
+        )
     } else {
-        // Single-Pane Phone Layout
-        if (selectedDocument != null) {
-            ReaderScreen(
-                document = selectedDocument,
-                allDocuments = documents,
-                blobStore = blobStore,
-                annotationStore = annotationStore,
-                cloudClient = cloudClient,
-                isFoldable = false,
-                isFullscreen = false,
-                onSelectDocument = onSelectDocument,
-                onOpenMeetingRecorder = onOpenMeetingRecorder,
-                onOptimizeCurrentPdf = onOptimizeCurrentPdf,
-                onBack = { onSelectDocument(null) },
-                modifier = modifier
-            )
-        } else {
-            LibraryScreen(
-                documents = documents,
-                isSyncing = isSyncing,
-                syncStatusMessage = syncStatusMessage,
-                syncGeneration = syncGeneration,
-                currentFolderId = currentFolderId,
-                blobStore = blobStore,
-                onOpenDocument = onSelectDocument,
-                onOpenFolder = onOpenFolder,
-                onSyncNow = onSyncNow,
-                onQuickCapture = onQuickCapture,
-                onOpenConverter = onOpenConverter,
-                onOpenSettings = onOpenSettings,
-                onOpenMeetingRecorder = onOpenMeetingRecorder,
-                isFoldable = false,
-                onGoHome = {
-                    onOpenFolder("")
-                    onSelectDocument(null)
-                },
-                modifier = modifier
-            )
-        }
+        // Fullscreen Library (both for Foldables and Phones when browsing the library)
+        // Fills the whole page so folder and document grids take full screen width!
+        LibraryScreen(
+            documents = documents,
+            isSyncing = isSyncing,
+            syncStatusMessage = syncStatusMessage,
+            syncGeneration = syncGeneration,
+            currentFolderId = currentFolderId,
+            blobStore = blobStore,
+            onOpenDocument = onSelectDocument,
+            onOpenFolder = onOpenFolder,
+            onSyncNow = onSyncNow,
+            onQuickCapture = onQuickCapture,
+            onOpenConverter = onOpenConverter,
+            onOpenSettings = onOpenSettings,
+            onOpenMeetingRecorder = onOpenMeetingRecorder,
+            onDeleteDocument = onDeleteDocument,
+            isFoldable = isFoldableOrExpanded,
+            focusSearchTrigger = focusSearchTrigger,
+            onGoHome = {
+                onOpenFolder("")
+                onSelectDocument(null)
+            },
+            modifier = modifier.fillMaxSize().then(keyModifier)
+        )
     }
 }

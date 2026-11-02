@@ -306,7 +306,15 @@ class MainActivity : ComponentActivity() {
                                 annotationStore = annotationStore,
                                 cloudClient = cloudClient,
                                 initialIsSidebarMinimized = appSettings.isSidebarMinimized,
-                                onSidebarMinimizedChanged = { isMin -> appSettings.isSidebarMinimized = isMin }
+                                onSidebarMinimizedChanged = { isMin -> appSettings.isSidebarMinimized = isMin },
+                                onDeleteDocument = { doc ->
+                                    repository.markDocumentDeleted(doc.id)
+                                    documents = repository.getAllDocuments()
+                                    if (selectedDocument?.id == doc.id) {
+                                        selectedDocument = null
+                                    }
+                                    Toast.makeText(this@MainActivity, "\"${doc.visibleName}\" moved to trash", Toast.LENGTH_SHORT).show()
+                                }
                             )
                         }
                     }
