@@ -118,10 +118,10 @@ fun OnboardingScreen(
                     Spacer(modifier = Modifier.height(6.dp))
                     OutlinedTextField(
                         value = code,
-                        onValueChange = {
-                            if (it.length <= 8) code = it.uppercase().filter { ch -> ch.isLetterOrDigit() }
+                        onValueChange = { input ->
+                            if (input.length <= 8) code = input.lowercase().filter { ch -> ch.isLetterOrDigit() }
                         },
-                        placeholder = { Text("e.g. ABCDEFGH", letterSpacing = 2.sp) },
+                        placeholder = { Text("e.g. abcdefgh", letterSpacing = 2.sp) },
                         textStyle = LocalTextStyle.current.copy(
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
@@ -131,13 +131,13 @@ fun OnboardingScreen(
                         ),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Characters,
+                            capitalization = KeyboardCapitalization.None,
                             imeAction = ImeAction.Done
                         ),
                         keyboardActions = KeyboardActions(
                             onDone = {
                                 focusManager.clearFocus()
-                                if (code.length == 8) onPairCode(code)
+                                if (code.length == 8) onPairCode(code.trim().lowercase())
                             }
                         ),
                         shape = RoundedCornerShape(12.dp),
@@ -159,7 +159,7 @@ fun OnboardingScreen(
                 Button(
                     onClick = {
                         focusManager.clearFocus()
-                        onPairCode(code)
+                        onPairCode(code.trim().lowercase())
                     },
                     enabled = code.length == 8 && !isPairing,
                     modifier = Modifier

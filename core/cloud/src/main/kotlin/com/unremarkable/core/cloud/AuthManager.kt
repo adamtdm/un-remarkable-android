@@ -148,7 +148,7 @@ class AuthManager(
     }
 
     companion object {
-        const val DEFAULT_AUTH_HOST = "https://my.remarkable.com"
+        const val DEFAULT_AUTH_HOST = "https://webapp-prod.cloud.remarkable.engineering"
         const val DEFAULT_DEVICE_DESC = "android"
         const val EXPIRATION_BUFFER_SECONDS = 120L
     }
