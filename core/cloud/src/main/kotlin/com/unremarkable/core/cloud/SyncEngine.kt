@@ -47,6 +47,7 @@ class SyncEngine(
 
             val totalDocs = docEntries.size
             val remoteDocIds = mutableSetOf<String>()
+            val syncedDocsList = mutableListOf<DocumentItem>()
 
             for ((index, docEntry) in docEntries.withIndex()) {
                 remoteDocIds.add(docEntry.docId)
@@ -69,11 +70,24 @@ class SyncEngine(
                     fetched
                 }
 
-                // 2. Parse subfiles to locate .content metadata
+                // 2. Parse subfiles to locate .metadata, .content, and payload files
                 val (subfiles, _) = IndexParser.parseIndex(rawDocIndex)
+                val metadataEntry = subfiles.find { it.docId.endsWith(".metadata") }
                 val contentEntry = subfiles.find { it.docId.endsWith(".content") }
 
-                var metadata = DocumentMetadata(visibleName = "Untitled", type = DocumentMetadata.TYPE_DOCUMENT)
+                var metadataJson: String? = null
+                if (metadataEntry != null) {
+                    val rawMeta: ByteArray = if (blobStore.hasBlob(metadataEntry.hash)) {
+                        blobStore.getBlob(metadataEntry.hash) ?: client.getBlob(metadataEntry.hash, metadataEntry.docId)
+                    } else {
+                        val fetched = client.getBlob(metadataEntry.hash, metadataEntry.docId)
+                        blobStore.putBlob(metadataEntry.hash, fetched)
+                        fetched
+                    }
+                    metadataJson = String(rawMeta, StandardCharsets.UTF_8)
+                }
+
+                var contentJson: String? = null
                 if (contentEntry != null) {
                     val rawContent: ByteArray = if (blobStore.hasBlob(contentEntry.hash)) {
                         blobStore.getBlob(contentEntry.hash) ?: client.getBlob(contentEntry.hash, contentEntry.docId)
@@ -82,13 +96,33 @@ class SyncEngine(
                         blobStore.putBlob(contentEntry.hash, fetched)
                         fetched
                     }
-                    val jsonStr = String(rawContent, StandardCharsets.UTF_8)
-                    metadata = DocumentMetadata.fromJson(jsonStr)
+                    contentJson = String(rawContent, StandardCharsets.UTF_8)
+                }
+
+                val metadata = DocumentMetadata.parseFromRaw(metadataJson, contentJson)
+                val subfileMap = subfiles.associate { it.docId to it.hash }
+
+                // 3. Pre-cache document payload blobs (PDF, EPUB, RM strokes) directly to disk
+                for (sf in subfiles) {
+                    if (!blobStore.hasBlob(sf.hash)) {
+                        val isPayload = sf.docId.endsWith(".pdf", ignoreCase = true) ||
+                                        sf.docId.endsWith(".epub", ignoreCase = true) ||
+                                        sf.docId.endsWith(".rm", ignoreCase = true) ||
+                                        sf.docId.endsWith(".pagedata", ignoreCase = true)
+                        if (isPayload) {
+                            val destinationFile = blobStore.getBlobFile(sf.hash)
+                            try {
+                                client.downloadBlobToFile(sf.hash, destinationFile, sf.docId)
+                            } catch (_: Exception) {
+                                // Continue sync if individual payload pre-cache is interrupted
+                            }
+                        }
+                    }
                 }
 
                 val docItem = DocumentItem(
                     id = docEntry.docId,
-                    visibleName = metadata.visibleName.ifBlank { "Untitled" },
+                    visibleName = metadata.visibleName.ifBlank { docEntry.docId },
                     parent = metadata.parent,
                     isFolder = metadata.isFolder,
                     pageCount = metadata.pageCount,
@@ -97,11 +131,15 @@ class SyncEngine(
                     lastModified = metadata.lastModified.toLongOrNull() ?: System.currentTimeMillis(),
                     tags = metadata.tags,
                     hash = docEntry.hash,
-                    fileType = metadata.fileType
+                    fileType = metadata.fileType,
+                    subfiles = subfileMap
                 )
 
-                repository.upsertDocument(docItem)
+                syncedDocsList.add(docItem)
             }
+
+            // Batch upsert all synced documents to eliminate quadratic disk writes
+            repository.upsertDocuments(syncedDocsList)
 
             // 3. Detect remote deletions
             val existingDocs = repository.getAllDocuments()

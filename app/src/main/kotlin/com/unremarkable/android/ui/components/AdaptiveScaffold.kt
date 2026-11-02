@@ -18,8 +18,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.ui.screens.LibraryScreen
 import com.unremarkable.android.ui.screens.ReaderScreen
+import com.unremarkable.core.cloud.BlobStore
+import com.unremarkable.core.cloud.RMCloudClient
 import com.unremarkable.core.model.DocumentItem
 
 const val FOLDABLE_BREAKPOINT_DP = 600
@@ -43,6 +46,9 @@ fun AdaptiveScaffold(
     onOpenSettings: () -> Unit,
     selectedDocument: DocumentItem?,
     onSelectDocument: (DocumentItem?) -> Unit,
+    blobStore: BlobStore? = null,
+    annotationStore: AnnotationStore? = null,
+    cloudClient: RMCloudClient? = null,
     modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
@@ -163,6 +169,9 @@ fun AdaptiveScaffold(
                     ReaderScreen(
                         document = selectedDocument,
                         allDocuments = documents,
+                        blobStore = blobStore,
+                        annotationStore = annotationStore,
+                        cloudClient = cloudClient,
                         isFoldable = true,
                         isFullscreen = sidebarMode == SidebarMode.FULLSCREEN,
                         onToggleFullscreen = {
@@ -270,6 +279,9 @@ fun AdaptiveScaffold(
             ReaderScreen(
                 document = selectedDocument,
                 allDocuments = documents,
+                blobStore = blobStore,
+                annotationStore = annotationStore,
+                cloudClient = cloudClient,
                 isFoldable = false,
                 isFullscreen = false,
                 onSelectDocument = onSelectDocument,

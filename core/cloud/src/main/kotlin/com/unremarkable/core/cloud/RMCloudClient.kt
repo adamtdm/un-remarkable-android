@@ -13,6 +13,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.File
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 
@@ -86,6 +87,44 @@ class RMCloudClient(
                 throw CloudException.RequestFailed(resp.code, "Failed to download blob $blobHash ($filename)")
             }
             resp.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
+    suspend fun downloadBlobToFile(
+        blobHash: String,
+        destinationFile: File,
+        filename: String = ""
+    ) = withContext(Dispatchers.IO) {
+        val builder = Request.Builder().url("$syncHost/sync/v3/files/$blobHash")
+        if (filename.isNotBlank()) {
+            builder.header("rm-filename", filename)
+        }
+
+        executeRequest(builder).use { resp ->
+            if (resp.code == 404) {
+                throw CloudException.BlobNotFound(blobHash)
+            }
+            if (!resp.isSuccessful) {
+                throw CloudException.RequestFailed(resp.code, "Failed to download blob $blobHash ($filename)")
+            }
+            val body = resp.body ?: throw CloudException.RequestFailed(resp.code, "Empty response body")
+            val parent = destinationFile.parentFile
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs()
+            }
+            val tmp = File(parent ?: File("."), "${destinationFile.name}.tmp")
+            body.byteStream().use { input ->
+                tmp.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (!tmp.renameTo(destinationFile)) {
+                java.nio.file.Files.move(
+                    tmp.toPath(),
+                    destinationFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            }
         }
     }
 

@@ -109,6 +109,16 @@ class PersistentDocumentRepository(
         }
     }
 
+    override fun upsertDocuments(docs: List<DocumentItem>) {
+        if (docs.isEmpty()) return
+        synchronized(lock) {
+            for (doc in docs) {
+                docsMap[doc.id] = doc
+            }
+            persistToDisk()
+        }
+    }
+
     override fun markDocumentDeleted(id: String) {
         synchronized(lock) {
             val existing = docsMap[id] ?: return

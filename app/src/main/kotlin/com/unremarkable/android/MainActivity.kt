@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.unremarkable.android.storage.AndroidTokenStorage
+import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.storage.AppSettings
 import com.unremarkable.android.storage.PersistentDocumentRepository
 import com.unremarkable.android.storage.ThemeMode
@@ -43,6 +44,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var appSettings: AppSettings
     private lateinit var repository: PersistentDocumentRepository
     private lateinit var blobStore: FileBlobStore
+    private lateinit var annotationStore: AnnotationStore
     private lateinit var cloudClient: RMCloudClient
     private lateinit var syncEngine: SyncEngine
     private val converterEngine = ComicConverterEngine()
@@ -56,8 +58,15 @@ class MainActivity : ComponentActivity() {
         appSettings = AppSettings(applicationContext)
         repository = PersistentDocumentRepository(applicationContext)
         blobStore = FileBlobStore(File(filesDir, "blobs"))
+        annotationStore = AnnotationStore(File(filesDir, "annotations"))
         cloudClient = RMCloudClient(auth = authManager)
         syncEngine = SyncEngine(client = cloudClient, blobStore = blobStore, repository = repository)
+
+        // Reset root generation if existing documents were parsed with previous buggy parser (missing subfiles or Untitled)
+        val existingDocs = repository.getAllDocuments()
+        if (existingDocs.isNotEmpty() && existingDocs.any { it.subfiles.isEmpty() || it.visibleName == "Untitled" }) {
+            repository.saveRoot("", 0L)
+        }
 
         setContent {
             var themeModeState by remember { mutableStateOf(appSettings.themeMode) }
@@ -186,6 +195,7 @@ class MainActivity : ComponentActivity() {
                                     authManager.clearTokens()
                                     repository.clearAll()
                                     blobStore.clear()
+                                    annotationStore.clearAll()
                                     documents = emptyList()
                                     selectedDocument = null
                                     Toast.makeText(this@MainActivity, "Device unpaired and cache cleared", Toast.LENGTH_SHORT).show()
@@ -215,7 +225,10 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onOpenSettings = { showSettings = true },
                                 selectedDocument = selectedDocument,
-                                onSelectDocument = { selectedDocument = it }
+                                onSelectDocument = { selectedDocument = it },
+                                blobStore = blobStore,
+                                annotationStore = annotationStore,
+                                cloudClient = cloudClient
                             )
                         }
                     }

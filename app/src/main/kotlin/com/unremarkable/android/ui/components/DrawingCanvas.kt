@@ -34,11 +34,13 @@ class DrawnStroke(
     val strokeWidth: Float,
     val opacity: Float = 1.0f
 ) {
-    val path: Path = Path().apply {
-        if (points.isNotEmpty()) {
-            moveTo(points.first().x, points.first().y)
-            for (i in 1 until points.size) {
-                lineTo(points[i].x, points[i].y)
+    val path: Path by lazy {
+        Path().apply {
+            if (points.isNotEmpty()) {
+                moveTo(points.first().x, points.first().y)
+                for (i in 1 until points.size) {
+                    lineTo(points[i].x, points[i].y)
+                }
             }
         }
     }
@@ -113,9 +115,13 @@ fun DrawingCanvas(
                         },
                         onDrag = { change, _ ->
                             change.consume()
-                            livePoints.add(change.position)
-                            livePath.lineTo(change.position.x, change.position.y)
-                            liveTick++
+                            val pos = change.position
+                            val last = livePoints.lastOrNull()
+                            if (last == null || (pos.x - last.x) * (pos.x - last.x) + (pos.y - last.y) * (pos.y - last.y) >= 16f) {
+                                livePoints.add(pos)
+                                livePath.lineTo(pos.x, pos.y)
+                                liveTick++
+                            }
                         },
                         onDragEnd = {
                             if (livePoints.isNotEmpty()) {

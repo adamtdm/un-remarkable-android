@@ -1,6 +1,8 @@
 package com.unremarkable.android.ui.screens
 
+import android.graphics.Bitmap
 import androidx.compose.animation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -16,14 +18,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.unremarkable.android.render.PdfDocumentRenderer
+import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.ui.components.DrawnStroke
 import com.unremarkable.android.ui.components.DrawingCanvas
 import com.unremarkable.android.ui.components.FavoritesShelf
 import com.unremarkable.android.ui.theme.Zinc800
 import com.unremarkable.android.ui.theme.Zinc900
+import com.unremarkable.core.cloud.BlobStore
+import com.unremarkable.core.cloud.RMCloudClient
 import com.unremarkable.core.model.DocumentItem
 import kotlinx.coroutines.delay
 
@@ -31,6 +41,9 @@ import kotlinx.coroutines.delay
 fun ReaderScreen(
     document: DocumentItem,
     allDocuments: List<DocumentItem> = emptyList(),
+    blobStore: BlobStore? = null,
+    annotationStore: AnnotationStore? = null,
+    cloudClient: RMCloudClient? = null,
     isFoldable: Boolean = false,
     isFullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
@@ -38,14 +51,22 @@ fun ReaderScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var currentPage by remember { mutableIntStateOf(1) }
-    val totalPages = document.pageCount.coerceAtLeast(1)
+    var currentPage by remember(document.id) { mutableIntStateOf(1) }
+    var totalPages by remember(document.id) { mutableIntStateOf(document.pageCount.coerceAtLeast(1)) }
     var isDarkMode by remember { mutableStateOf(false) }
     var isHudVisible by remember { mutableStateOf(true) }
     var isDrawingMode by remember { mutableStateOf(false) }
     var showFavoritesShelf by remember { mutableStateOf(false) }
     var pageStrokesMap by remember(document.id) { mutableStateOf<Map<Int, List<DrawnStroke>>>(emptyMap()) }
     val currentStrokes = pageStrokesMap[currentPage].orEmpty()
+
+    // Load persisted strokes for current page
+    LaunchedEffect(document.id, currentPage) {
+        if (annotationStore != null) {
+            val loaded = annotationStore.loadStrokes(document.id, currentPage)
+            pageStrokesMap = pageStrokesMap + (currentPage to loaded)
+        }
+    }
 
     // Auto-hide HUD after 3.5 seconds unless drawing mode is active
     LaunchedEffect(isHudVisible, isDrawingMode) {
@@ -55,8 +76,65 @@ fun ReaderScreen(
         }
     }
 
+    // Detect PDF document payload
+    val pdfEntry = document.subfiles.entries.find { it.key.endsWith(".pdf", ignoreCase = true) }
+    val pdfHash = pdfEntry?.value ?: if (document.fileType.equals("pdf", ignoreCase = true)) document.hash else null
+    val isPdf = !pdfHash.isNullOrBlank()
+
+    var pdfRenderer by remember(document.id, pdfHash) { mutableStateOf<PdfDocumentRenderer?>(null) }
+    var isLoadingFile by remember(document.id) { mutableStateOf(false) }
+    var currentBitmap by remember(document.id, currentPage) { mutableStateOf<Bitmap?>(null) }
+
+    // Background PDF Loader & Downloader
+    LaunchedEffect(document.id, pdfHash) {
+        if (isPdf && blobStore != null && pdfHash != null) {
+            val blobFile = blobStore.getBlobFile(pdfHash)
+            if (!blobFile.exists() || blobFile.length() == 0L) {
+                if (cloudClient != null) {
+                    isLoadingFile = true
+                    try {
+                        cloudClient.downloadBlobToFile(pdfHash, blobFile, pdfEntry?.key ?: "${document.id}.pdf")
+                    } catch (_: Exception) {}
+                    isLoadingFile = false
+                }
+            }
+            if (blobFile.exists() && blobFile.length() > 0L) {
+                val renderer = PdfDocumentRenderer.open(blobFile)
+                if (renderer != null) {
+                    pdfRenderer = renderer
+                    totalPages = renderer.pageCount.coerceAtLeast(1)
+                }
+            }
+        }
+    }
+
+    // Render PDF page on page change
+    LaunchedEffect(currentPage, pdfRenderer) {
+        val renderer = pdfRenderer
+        if (renderer != null) {
+            currentBitmap = renderer.renderPage(currentPage - 1)
+        }
+    }
+
+    DisposableEffect(pdfRenderer) {
+        onDispose {
+            pdfRenderer?.close()
+        }
+    }
+
     val canvasBackground = if (isDarkMode) Zinc900 else Color.White
     val inkColor = if (isDarkMode) Color(0xFFF4F4F5) else Color(0xFF18181B)
+
+    val darkColorMatrix = remember {
+        ColorMatrix(
+            floatArrayOf(
+                -0.85f, 0f, 0f, 0f, 230f,
+                0f, -0.85f, 0f, 0f, 230f,
+                0f, 0f, -0.85f, 0f, 230f,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+    }
 
     Box(
         modifier = modifier
@@ -103,7 +181,7 @@ fun ReaderScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(if (isFullscreen) 8.dp else 24.dp),
+                .padding(if (isFullscreen) 4.dp else 20.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -119,51 +197,103 @@ fun ReaderScreen(
                     .weight(1f)
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    // Page Template Lines & Content
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = document.visibleName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = inkColor.copy(alpha = 0.9f)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
+                    when {
+                        isLoadingFile -> {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                    Text(
+                                        text = "Downloading document from reMarkable Cloud...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                        isPdf && currentBitmap != null -> {
+                            // Real PDF Page Image Rendering with Smart Dark Mode
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Image(
+                                    bitmap = currentBitmap!!.asImageBitmap(),
+                                    contentDescription = "Page $currentPage",
+                                    contentScale = ContentScale.Fit,
+                                    colorFilter = if (isDarkMode) ColorFilter.colorMatrix(darkColorMatrix) else null,
+                                    modifier = Modifier.fillMaxSize()
+                                )
 
-                        // Simulated Lined Notebook Grid
-                        Column(
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                            verticalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            repeat(14) {
-                                HorizontalDivider(
-                                    color = if (isDarkMode) Zinc800.copy(alpha = 0.6f) else Color(0xFFE4E4E7).copy(alpha = 0.7f),
-                                    thickness = 1.dp
+                                // Overlay Drawing Canvas directly onto PDF page
+                                DrawingCanvas(
+                                    isDarkMode = isDarkMode,
+                                    isDrawingEnabled = isDrawingMode,
+                                    strokes = currentStrokes,
+                                    onStrokesChanged = { updatedList ->
+                                        pageStrokesMap = pageStrokesMap + (currentPage to updatedList)
+                                        annotationStore?.saveStrokes(document.id, currentPage, updatedList)
+                                    },
+                                    modifier = Modifier.fillMaxSize()
                                 )
                             }
                         }
+                        else -> {
+                            // Authentic reMarkable Notebook Lined Page Template
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(24.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = document.visibleName,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = inkColor.copy(alpha = 0.9f)
+                                    )
+                                    Spacer(modifier = Modifier.height(16.dp))
 
-                        Text(
-                            text = "Page $currentPage of $totalPages • Swipe 2 fingers down for Favorites",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = inkColor.copy(alpha = 0.4f)
-                        )
+                                    // Ruled Notebook Template
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().weight(1f),
+                                        verticalArrangement = Arrangement.SpaceEvenly
+                                    ) {
+                                        repeat(20) {
+                                            HorizontalDivider(
+                                                color = if (isDarkMode) Zinc800.copy(alpha = 0.5f) else Color(0xFFE4E4E7).copy(alpha = 0.6f),
+                                                thickness = 1.dp
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        text = "Page $currentPage of $totalPages • Swipe 2 fingers down for Favorites",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = inkColor.copy(alpha = 0.4f)
+                                    )
+                                }
+
+                                // Interactive Drawing Canvas on Notebook
+                                DrawingCanvas(
+                                    isDarkMode = isDarkMode,
+                                    isDrawingEnabled = isDrawingMode,
+                                    strokes = currentStrokes,
+                                    onStrokesChanged = { updatedList ->
+                                        pageStrokesMap = pageStrokesMap + (currentPage to updatedList)
+                                        annotationStore?.saveStrokes(document.id, currentPage, updatedList)
+                                    },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
                     }
-
-                    // Interactive Drawing Layer
-                    DrawingCanvas(
-                        isDarkMode = isDarkMode,
-                        isDrawingEnabled = isDrawingMode,
-                        strokes = currentStrokes,
-                        onStrokesChanged = { updatedList ->
-                            pageStrokesMap = pageStrokesMap + (currentPage to updatedList)
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
                 }
             }
         }
@@ -297,3 +427,4 @@ fun ReaderScreen(
         )
     }
 }
+

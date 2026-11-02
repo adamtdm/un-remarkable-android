@@ -14,5 +14,6 @@ data class DocumentItem(
     val lastModified: Long = 0L,
     val tags: List<String> = emptyList(),
     val hash: String = "",
-    val fileType: String = ""
+    val fileType: String = "",
+    val subfiles: Map<String, String> = emptyMap()
 )

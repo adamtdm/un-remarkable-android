@@ -5,6 +5,9 @@ interface SyncRepository {
     fun getLocalGeneration(): Long
     fun saveRoot(hash: String, generation: Long)
     fun upsertDocument(doc: DocumentItem)
+    fun upsertDocuments(docs: List<DocumentItem>) {
+        docs.forEach { upsertDocument(it) }
+    }
     fun markDocumentDeleted(id: String)
     fun getAllDocuments(): List<DocumentItem>
     fun getDocumentsInFolder(parentId: String): List<DocumentItem>
