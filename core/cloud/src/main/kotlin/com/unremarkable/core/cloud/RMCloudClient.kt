@@ -26,9 +26,11 @@ data class RootInfo(
 class RMCloudClient(
     val auth: AuthManager = AuthManager(),
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
+        .callTimeout(120, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build(),
     private val syncHost: String = DEFAULT_SYNC_HOST
 ) {

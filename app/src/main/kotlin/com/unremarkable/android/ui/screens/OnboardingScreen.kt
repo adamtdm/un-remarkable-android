@@ -145,8 +145,18 @@ fun OnboardingScreen(
                     )
                 }
 
+                // Status / Hint during pairing
+                if (isPairing) {
+                    Text(
+                        text = "Verifying with reMarkable Cloud (takes ~10 seconds)...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
                 // Error message
-                if (!errorMessage.isNullOrBlank()) {
+                if (!errorMessage.isNullOrBlank() && !isPairing) {
                     Text(
                         text = errorMessage,
                         style = MaterialTheme.typography.bodySmall,

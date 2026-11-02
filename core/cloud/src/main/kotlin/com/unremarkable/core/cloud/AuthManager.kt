@@ -13,10 +13,11 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 class AuthManager(
     private val storage: TokenStorage = InMemoryTokenStorage(),
-    private val client: OkHttpClient = OkHttpClient(),
+    private val client: OkHttpClient = defaultAuthClient(),
     private val authHost: String = DEFAULT_AUTH_HOST,
     private val deviceDesc: String = DEFAULT_DEVICE_DESC
 ) {
@@ -85,21 +86,29 @@ class AuthManager(
             .build()
 
         try {
-            client.newCall(request).execute().use { response ->
+            val deviceToken = client.newCall(request).execute().use { response ->
                 val body = response.body?.string()?.trim().orEmpty()
                 if (!response.isSuccessful || body.isBlank()) {
                     return@withContext Result.failure(
                         CloudException.AuthFailed("Device registration failed (${response.code}): $body")
                     )
                 }
-
-                tokens = tokens.copy(deviceToken = body, deviceId = deviceId)
-                storage.saveTokens(tokens)
-
-                // Immediately exchange device token for user token
-                refreshUserToken()
-                Result.success(body)
+                body
             }
+
+            tokens = tokens.copy(deviceToken = deviceToken, deviceId = deviceId)
+            storage.saveTokens(tokens)
+
+            // Immediately exchange device token for user session token
+            val refreshResult = refreshUserToken()
+            if (refreshResult.isFailure) {
+                val err = refreshResult.exceptionOrNull()?.message ?: "Failed to acquire user token"
+                return@withContext Result.failure(
+                    CloudException.AuthFailed("Device registered, but session initialization failed: $err")
+                )
+            }
+
+            Result.success(deviceToken)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -151,5 +160,15 @@ class AuthManager(
         const val DEFAULT_AUTH_HOST = "https://webapp-prod.cloud.remarkable.engineering"
         const val DEFAULT_DEVICE_DESC = "android"
         const val EXPIRATION_BUFFER_SECONDS = 120L
+
+        fun defaultAuthClient(): OkHttpClient {
+            return OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .callTimeout(90, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build()
+        }
     }
 }

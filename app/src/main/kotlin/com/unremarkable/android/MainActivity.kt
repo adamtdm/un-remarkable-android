@@ -145,7 +145,19 @@ class MainActivity : ComponentActivity() {
                                             showOnboarding = false
                                             runSync()
                                         } else {
-                                            pairingError = res.exceptionOrNull()?.message ?: "Pairing failed. Please check the code."
+                                            val error = res.exceptionOrNull()
+                                            pairingError = when {
+                                                error is java.net.SocketTimeoutException ||
+                                                error?.message?.contains("timeout", ignoreCase = true) == true ->
+                                                    "Connection timed out. reMarkable cloud servers took too long to respond. Please check your network and try again."
+                                                error is java.net.UnknownHostException ->
+                                                    "Cannot reach reMarkable cloud. Please verify your device has an active internet connection."
+                                                error?.message?.contains("Invalid", ignoreCase = true) == true ||
+                                                error?.message?.contains("400") == true ->
+                                                    "Invalid or expired one-time code. Please generate a fresh code at my.remarkable.com and enter it."
+                                                else ->
+                                                    error?.message ?: "Pairing failed. Please check the code and try again."
+                                            }
                                         }
                                     }
                                 },
