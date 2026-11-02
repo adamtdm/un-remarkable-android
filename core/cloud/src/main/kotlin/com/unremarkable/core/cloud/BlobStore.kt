@@ -1,8 +1,8 @@
 package com.unremarkable.core.cloud
 
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 interface BlobStore {
@@ -42,12 +42,22 @@ class FileBlobStore(private val baseDir: File) : BlobStore {
         }
         val tmpFile = File(parent, "$hash.tmp")
         tmpFile.writeBytes(data)
-        tmpFile.renameTo(file)
+        try {
+            Files.move(
+                tmpFile.toPath(),
+                file.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
+        } catch (e: Exception) {
+            // Fallback for filesystems that do not support ATOMIC_MOVE
+            Files.move(tmpFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
         return file
     }
 
     override fun getBlobFile(hash: String): File {
-        // Shard blobs by first 2 chars of hash to prevent large flat folders: blobs/a1/a1b2c3...
+        // Shard blobs by first 2 chars of hash: blobs/a1/a1b2c3...
         val prefix = if (hash.length >= 2) hash.substring(0, 2) else "xx"
         val dir = File(baseDir, prefix)
         return File(dir, hash)
