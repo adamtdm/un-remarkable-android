@@ -9,7 +9,8 @@ import java.io.File
 
 class PdfDocumentRenderer private constructor(
     private val pfd: ParcelFileDescriptor,
-    private val renderer: PdfRenderer
+    private val renderer: PdfRenderer,
+    val sourceFile: File? = null
 ) : AutoCloseable {
 
     val pageCount: Int
@@ -36,6 +37,25 @@ class PdfDocumentRenderer private constructor(
         }
     }
 
+    suspend fun renderThumbnail(pageIndex: Int, targetWidth: Int = 220, targetHeight: Int = 300): Bitmap = withContext(Dispatchers.Default) {
+        val safeIndex = pageIndex.coerceIn(0, (renderer.pageCount - 1).coerceAtLeast(0))
+        val page = renderer.openPage(safeIndex)
+        try {
+            val srcW = page.width
+            val srcH = page.height
+            val scale = minOf(targetWidth.toFloat() / srcW, targetHeight.toFloat() / srcH)
+            val renderW = (srcW * scale).toInt().coerceAtLeast(1)
+            val renderH = (srcH * scale).toInt().coerceAtLeast(1)
+
+            val bitmap = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.RGB_565)
+            bitmap.eraseColor(android.graphics.Color.WHITE)
+            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+            bitmap
+        } finally {
+            page.close()
+        }
+    }
+
     override fun close() {
         try {
             renderer.close()
@@ -51,7 +71,7 @@ class PdfDocumentRenderer private constructor(
             return try {
                 val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
                 val renderer = PdfRenderer(pfd)
-                PdfDocumentRenderer(pfd, renderer)
+                PdfDocumentRenderer(pfd, renderer, file)
             } catch (_: Exception) {
                 null
             }

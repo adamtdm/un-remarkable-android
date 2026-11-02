@@ -83,10 +83,15 @@ fun DrawingCanvas(
     isDrawingEnabled: Boolean,
     strokes: List<DrawnStroke>,
     onStrokesChanged: (List<DrawnStroke>) -> Unit,
+    selectedTool: ToolType? = null,
+    selectedColor: PenColor? = null,
     modifier: Modifier = Modifier
 ) {
-    var activeTool by remember { mutableStateOf(ToolType.FINELINER) }
-    var activeColor by remember { mutableStateOf(PenColor.BLACK) }
+    var internalTool by remember { mutableStateOf(ToolType.FINELINER) }
+    var internalColor by remember { mutableStateOf(PenColor.BLACK) }
+
+    val activeTool = selectedTool ?: internalTool
+    val activeColor = selectedColor ?: internalColor
     var undoStack by remember { mutableStateOf<List<List<DrawnStroke>>>(emptyList()) }
 
     // Live stroke state during active touch drag
@@ -227,7 +232,7 @@ fun DrawingCanvas(
                 ) {
                     // Tool Buttons
                     IconButton(
-                        onClick = { activeTool = ToolType.FINELINER },
+                        onClick = { internalTool = ToolType.FINELINER },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (activeTool == ToolType.FINELINER) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         )
@@ -236,7 +241,7 @@ fun DrawingCanvas(
                     }
 
                     IconButton(
-                        onClick = { activeTool = ToolType.MARKER },
+                        onClick = { internalTool = ToolType.MARKER },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (activeTool == ToolType.MARKER) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         )
@@ -245,7 +250,7 @@ fun DrawingCanvas(
                     }
 
                     IconButton(
-                        onClick = { activeTool = ToolType.HIGHLIGHTER },
+                        onClick = { internalTool = ToolType.HIGHLIGHTER },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (activeTool == ToolType.HIGHLIGHTER) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         )
@@ -254,7 +259,7 @@ fun DrawingCanvas(
                     }
 
                     IconButton(
-                        onClick = { activeTool = ToolType.PENCIL },
+                        onClick = { internalTool = ToolType.PENCIL },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (activeTool == ToolType.PENCIL) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         )
@@ -263,7 +268,7 @@ fun DrawingCanvas(
                     }
 
                     IconButton(
-                        onClick = { activeTool = ToolType.ERASER },
+                        onClick = { internalTool = ToolType.ERASER },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = if (activeTool == ToolType.ERASER) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                         )
@@ -279,7 +284,7 @@ fun DrawingCanvas(
                         val rgba = RmPalette.getColor(color.value, isDarkMode)
                         val c = Color(rgba.r, rgba.g, rgba.b)
                         IconButton(
-                            onClick = { activeColor = color },
+                            onClick = { internalColor = color },
                             modifier = Modifier.size(28.dp)
                         ) {
                             Surface(

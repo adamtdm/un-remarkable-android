@@ -103,4 +103,57 @@ class AnnotationStore(private val storageDir: File) {
             storageDir.listFiles()?.forEach { it.delete() }
         } catch (_: Exception) {}
     }
+
+    fun hasAnnotations(docId: String, page: Int): Boolean {
+        val safeDocId = docId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+        val file = File(storageDir, "${safeDocId}_p$page.json")
+        return file.exists() && file.length() > 4L
+    }
+
+    fun getAnnotatedPages(docId: String): Set<Int> {
+        val safeDocId = docId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+        val prefix = "${safeDocId}_p"
+        val files = storageDir.listFiles { _, name -> name.startsWith(prefix) && name.endsWith(".json") } ?: return emptySet()
+        return files.mapNotNull { f ->
+            val pageStr = f.name.removePrefix(prefix).removeSuffix(".json")
+            pageStr.toIntOrNull()
+        }.toSet()
+    }
+
+    fun getBookmarks(docId: String): Set<Int> {
+        val safeDocId = docId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+        val file = File(storageDir, "${safeDocId}_bookmarks.json")
+        if (!file.exists() || file.length() == 0L) return emptySet()
+        return try {
+            val text = file.readText(StandardCharsets.UTF_8)
+            json.decodeFromString<List<Int>>(text).toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+
+    fun toggleBookmark(docId: String, page: Int): Boolean {
+        val safeDocId = docId.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
+        val current = getBookmarks(docId).toMutableSet()
+        val isNowBookmarked = if (current.contains(page)) {
+            current.remove(page)
+            false
+        } else {
+            current.add(page)
+            true
+        }
+        val file = File(storageDir, "${safeDocId}_bookmarks.json")
+        if (current.isEmpty()) {
+            if (file.exists()) file.delete()
+        } else {
+            try {
+                file.writeText(json.encodeToString(current.toList().sorted()), StandardCharsets.UTF_8)
+            } catch (_: Exception) {}
+        }
+        return isNowBookmarked
+    }
+
+    fun isBookmarked(docId: String, page: Int): Boolean {
+        return getBookmarks(docId).contains(page)
+    }
 }
