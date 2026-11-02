@@ -38,14 +38,16 @@ enum class ThumbnailFilter {
 
 @Composable
 fun PageThumbnailGridDialog(
-    docId: String,
+    document: com.unremarkable.core.model.DocumentItem,
     totalPages: Int,
     currentPage: Int,
     pdfRenderer: PdfDocumentRenderer?,
+    blobStore: com.unremarkable.core.cloud.BlobStore? = null,
     annotationStore: AnnotationStore?,
     onSelectPage: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val docId = document.id
     var selectedFilter by remember { mutableStateOf(ThumbnailFilter.ALL) }
     val bookmarkedPages = remember(docId) { annotationStore?.getBookmarks(docId).orEmpty() }
     val annotatedPages = remember(docId) { annotationStore?.getAnnotatedPages(docId).orEmpty() }
@@ -157,9 +159,21 @@ fun PageThumbnailGridDialog(
                             val isBookmarked = pageNum in bookmarkedPages
                             val isAnnotated = pageNum in annotatedPages
 
-                            // Async thumbnail loading
-                            val thumbnailBitmap by produceState<Bitmap?>(initialValue = null, pageNum, pdfRenderer) {
-                                value = pdfRenderer?.renderThumbnail(pageNum - 1, 160, 220)
+                            // Async thumbnail loading for both PDFs and .rm notebooks
+                            val thumbnailBitmap by produceState<Bitmap?>(initialValue = null, pageNum, pdfRenderer, document.id) {
+                                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                    val pageIdx = pageNum - 1
+                                    val pdfIdx = com.unremarkable.android.render.DocumentExporter.resolvePdfPageIndex(document, pageIdx)
+                                    if (pdfRenderer != null && pdfIdx in 0 until pdfRenderer.pageCount) {
+                                        pdfRenderer.renderThumbnail(pdfIdx, 180, 240)
+                                    } else if (blobStore != null) {
+                                        val rmHash = com.unremarkable.android.render.DocumentExporter.resolveRmBlobHash(document, pageIdx)
+                                        val rmPage = rmHash?.let { blobStore.getBlob(it) }?.let { com.unremarkable.core.render.RmBinaryParser.parse(it) }
+                                        if (rmPage != null) {
+                                            com.unremarkable.android.render.RmPageCanvasRenderer.renderNotebookPage(rmPage, false, 240, 320)
+                                        } else null
+                                    } else null
+                                }
                             }
 
                             Card(

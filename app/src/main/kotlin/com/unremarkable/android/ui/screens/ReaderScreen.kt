@@ -1,16 +1,32 @@
 package com.unremarkable.android.ui.screens
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.widget.Toast
-import androidx.compose.animation.*
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -19,19 +35,24 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.unremarkable.android.render.DocumentExporter
 import com.unremarkable.android.render.PdfDocumentRenderer
 import com.unremarkable.android.render.PdfOutlineParser
-import com.unremarkable.android.render.TocEntry
+import com.unremarkable.android.render.RmPageCanvasRenderer
 import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.ui.components.*
 import com.unremarkable.android.ui.theme.Zinc800
@@ -39,11 +60,15 @@ import com.unremarkable.android.ui.theme.Zinc900
 import com.unremarkable.core.cloud.BlobStore
 import com.unremarkable.core.cloud.RMCloudClient
 import com.unremarkable.core.model.DocumentItem
-import com.unremarkable.core.render.PenColor
-import com.unremarkable.core.render.ToolType
+import com.unremarkable.core.render.RmBinaryParser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.abs
+
+private enum class FitMode { FIT_PAGE, FIT_WIDTH }
 
 @Composable
 fun ReaderScreen(
@@ -57,56 +82,78 @@ fun ReaderScreen(
     onToggleFullscreen: () -> Unit = {},
     onSelectDocument: (DocumentItem) -> Unit = {},
     onOpenMeetingRecorder: () -> Unit = {},
+    onOptimizeCurrentPdf: ((File, String) -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
 
     var currentPage by remember(document.id) { mutableIntStateOf(1) }
-    var totalPages by remember(document.id) { mutableIntStateOf(document.pageCount.coerceAtLeast(1)) }
+    var totalPages by remember(document.id) {
+        mutableIntStateOf(maxOf(document.pages.size, document.pageCount, 1))
+    }
     var isDarkMode by remember { mutableStateOf(false) }
+    var fitMode by remember { mutableStateOf(FitMode.FIT_PAGE) }
     var isHudVisible by remember { mutableStateOf(true) }
     var isDrawingMode by remember { mutableStateOf(false) }
     var isDualPageMode by remember(isFoldable) { mutableStateOf(isFoldable) }
-    var isFlexMode by remember { mutableStateOf(false) }
 
-    // Dialog & Sheet States
+    // Pinch-to-Zoom & Pan state (matches Docker viewer 1x..4.5x + focal pan + double-tap 2.2x)
+    var zoomScale by remember(document.id, currentPage, fitMode, isDualPageMode) { mutableFloatStateOf(1f) }
+    var panOffset by remember(document.id, currentPage, fitMode, isDualPageMode) { mutableStateOf(Offset.Zero) }
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+
+    fun resetZoom() {
+        zoomScale = 1f
+        panOffset = Offset.Zero
+    }
+
+    fun clampPan(offset: Offset, scale: Float): Offset {
+        if (scale <= 1.01f || viewportSize.width == 0 || viewportSize.height == 0) return Offset.Zero
+        val maxX = (viewportSize.width * (scale - 1f)) / 2f + 48f
+        val maxY = (viewportSize.height * (scale - 1f)) / 2f + 48f
+        return Offset(
+            offset.x.coerceIn(-maxX, maxX),
+            offset.y.coerceIn(-maxY, maxY)
+        )
+    }
+
+    // System Back gesture: exit drawing -> reset zoom -> back to library
+    BackHandler {
+        when {
+            isDrawingMode -> isDrawingMode = false
+            zoomScale > 1.05f -> resetZoom()
+            else -> onBack()
+        }
+    }
+
+    // Dialog & Menu States
     var showThumbnailGrid by remember { mutableStateOf(false) }
+    var showPageJumpDialog by remember { mutableStateOf(false) }
     var showTocDialog by remember { mutableStateOf(false) }
     var showSleepScreenStudio by remember { mutableStateOf(false) }
     var showFavoritesShelf by remember { mutableStateOf(false) }
     var showOverflowMenu by remember { mutableStateOf(false) }
-    var isExportingPdf by remember { mutableStateOf(false) }
 
-    // Bookmarking state for current page
     var isCurrentPageBookmarked by remember(document.id, currentPage) {
         mutableStateOf(annotationStore?.isBookmarked(document.id, currentPage) ?: false)
     }
 
-    // Dual-page pair indices
     val leftPage = remember(currentPage, isDualPageMode) {
-        if (!isDualPageMode) currentPage else if (currentPage % 2 == 1) currentPage else currentPage - 1
+        if (!isDualPageMode) currentPage else if (currentPage % 2 == 1) currentPage else (currentPage - 1).coerceAtLeast(1)
     }
     val rightPage = remember(leftPage, isDualPageMode, totalPages) {
         if (!isDualPageMode) null else (leftPage + 1).takeIf { it <= totalPages }
     }
 
-    // Strokes management per page
+    // Local stylus/touch annotation strokes
     var pageStrokesMap by remember(document.id) { mutableStateOf<Map<Int, List<DrawnStroke>>>(emptyMap()) }
-    val leftStrokes = pageStrokesMap[leftPage].orEmpty()
-    val rightStrokes = rightPage?.let { pageStrokesMap[it].orEmpty() } ?: emptyList()
-
-    // Inking tool & color state for Flex Mode & HUD
-    var selectedTool by remember { mutableStateOf(ToolType.FINELINER) }
-    var selectedColor by remember { mutableStateOf(PenColor.BLACK) }
-
-    // Load persisted strokes for active pages
     LaunchedEffect(document.id, leftPage, rightPage) {
         if (annotationStore != null) {
-            val loadedLeft = annotationStore.loadStrokes(document.id, leftPage)
             val updated = pageStrokesMap.toMutableMap()
-            updated[leftPage] = loadedLeft
+            updated[leftPage] = annotationStore.loadStrokes(document.id, leftPage)
             if (rightPage != null) {
                 updated[rightPage] = annotationStore.loadStrokes(document.id, rightPage)
             }
@@ -114,393 +161,420 @@ fun ReaderScreen(
         }
     }
 
-    // Auto-hide HUD after 4.5 seconds unless drawing mode or flex mode is active
-    LaunchedEffect(isHudVisible, isDrawingMode, isFlexMode) {
-        if (isHudVisible && !isDrawingMode && !isFlexMode) {
+    // Auto-hide HUD after 4.5s while reading cleanly
+    LaunchedEffect(isHudVisible, isDrawingMode) {
+        if (isHudVisible && !isDrawingMode) {
             delay(4500)
             isHudVisible = false
         }
     }
 
-    // Detect PDF document payload
-    val pdfEntry = document.subfiles.entries.find { it.key.endsWith(".pdf", ignoreCase = true) }
-    val pdfHash = pdfEntry?.value ?: if (document.fileType.equals("pdf", ignoreCase = true)) document.hash else null
-    val isPdf = !pdfHash.isNullOrBlank()
+    // Payload detection: PDF, EPUB, or native .rm Notebook
+    val pdfEntry = remember(document.id, document.subfiles) {
+        document.subfiles.entries.find { it.key.endsWith(".pdf", ignoreCase = true) }
+    }
+    val pdfHash = pdfEntry?.value ?: if (document.fileType.equals("pdf", ignoreCase = true)) document.hash.takeIf { it.isNotBlank() } else null
+    val epubEntry = remember(document.id, document.subfiles, pdfHash) {
+        if (pdfHash == null) document.subfiles.entries.find { it.key.endsWith(".epub", ignoreCase = true) } else null
+    }
+    val epubHash = epubEntry?.value
 
     var pdfRenderer by remember(document.id, pdfHash) { mutableStateOf<PdfDocumentRenderer?>(null) }
+    var epubPages by remember(document.id, epubHash) { mutableStateOf<List<List<String>>>(emptyList()) }
     var isLoadingFile by remember(document.id) { mutableStateOf(false) }
-    var currentBitmap by remember(document.id, leftPage) { mutableStateOf<Bitmap?>(null) }
-    var rightBitmap by remember(document.id, rightPage) { mutableStateOf<Bitmap?>(null) }
+    var loadError by remember(document.id) { mutableStateOf<String?>(null) }
+    var retryToken by remember { mutableIntStateOf(0) }
 
-    // Background PDF Loader & Downloader
-    LaunchedEffect(document.id, pdfHash) {
-        if (isPdf && blobStore != null && pdfHash != null) {
+    var leftBitmap by remember(document.id) { mutableStateOf<Bitmap?>(null) }
+    var rightBitmap by remember(document.id) { mutableStateOf<Bitmap?>(null) }
+    var isPageRendering by remember(document.id) { mutableStateOf(false) }
+
+    // Download & open base PDF or EPUB container on-demand
+    LaunchedEffect(document.id, pdfHash, epubHash, retryToken) {
+        loadError = null
+        if (blobStore == null) return@LaunchedEffect
+
+        if (!pdfHash.isNullOrBlank()) {
             val blobFile = blobStore.getBlobFile(pdfHash)
             if (!blobFile.exists() || blobFile.length() == 0L) {
                 if (cloudClient != null) {
                     isLoadingFile = true
                     try {
                         cloudClient.downloadBlobToFile(pdfHash, blobFile, pdfEntry?.key ?: "${document.id}.pdf")
-                    } catch (_: Exception) {}
-                    isLoadingFile = false
+                    } catch (e: Exception) {
+                        loadError = e.message ?: "Unable to download PDF from reMarkable Cloud"
+                    } finally {
+                        isLoadingFile = false
+                    }
+                } else {
+                    loadError = "Connect to reMarkable Cloud to download this PDF"
                 }
             }
             if (blobFile.exists() && blobFile.length() > 0L) {
-                val renderer = PdfDocumentRenderer.open(blobFile)
-                if (renderer != null) {
-                    pdfRenderer = renderer
-                    totalPages = renderer.pageCount.coerceAtLeast(1)
+                val opened = PdfDocumentRenderer.open(blobFile)
+                if (opened != null) {
+                    pdfRenderer = opened
+                    totalPages = if (document.pages.isNotEmpty()) {
+                        document.pages.size
+                    } else {
+                        opened.pageCount.coerceAtLeast(1)
+                    }
+                } else {
+                    loadError = "PDF file could not be opened"
+                }
+            }
+        } else if (!epubHash.isNullOrBlank()) {
+            val blobFile = blobStore.getBlobFile(epubHash)
+            if (!blobFile.exists() || blobFile.length() == 0L) {
+                if (cloudClient != null) {
+                    isLoadingFile = true
+                    try {
+                        cloudClient.downloadBlobToFile(epubHash, blobFile, epubEntry?.key ?: "${document.id}.epub")
+                    } catch (e: Exception) {
+                        loadError = e.message ?: "Unable to download EPUB from reMarkable Cloud"
+                    } finally {
+                        isLoadingFile = false
+                    }
+                }
+            }
+            if (blobFile.exists() && blobFile.length() > 0L) {
+                val extracted = withContext(Dispatchers.Default) {
+                    RmPageCanvasRenderer.extractEpubPages(blobFile)
+                }
+                epubPages = extracted
+                if (extracted.isNotEmpty() && document.pages.isEmpty()) {
+                    totalPages = extracted.size
+                }
+            }
+        } else {
+            val rmCount = document.subfiles.keys.count { it.endsWith(".rm", ignoreCase = true) }
+            totalPages = maxOf(document.pages.size, document.pageCount, rmCount, 1)
+        }
+    }
+
+    // Helper that downloads any missing .rm page blob and composites PDF + .rm ink/highlights/text
+    suspend fun loadCompositePage(pageNum: Int): Bitmap? = withContext(Dispatchers.IO) {
+        val pageIdx = (pageNum - 1).coerceAtLeast(0)
+        val pageRef = document.pages.getOrNull(pageIdx)
+        val rmHash = DocumentExporter.resolveRmBlobHash(document, pageIdx)
+
+        // Download .rm stroke/text blob on-demand if missing locally
+        var rmBytes: ByteArray? = null
+        if (!rmHash.isNullOrBlank() && blobStore != null) {
+            if (!blobStore.hasBlob(rmHash) && cloudClient != null) {
+                try {
+                    val rmKey = document.subfiles.entries.firstOrNull { it.value == rmHash }?.key ?: "${document.id}.rm"
+                    val fetched = cloudClient.getBlob(rmHash, rmKey)
+                    blobStore.putBlob(rmHash, fetched)
+                    rmBytes = fetched
+                } catch (_: Exception) {}
+            } else {
+                rmBytes = blobStore.getBlob(rmHash)
+            }
+        }
+
+        withContext(Dispatchers.Default) {
+            val rmPage = rmBytes?.let { RmBinaryParser.parse(it) }
+            val renderer = pdfRenderer
+            val rawPdfIdx = DocumentExporter.resolvePdfPageIndex(document, pageIdx)
+            val hasPdfBacking = renderer != null && rawPdfIdx in 0 until renderer.pageCount
+
+            when {
+                hasPdfBacking -> {
+                    val rawPdfBmp = renderer!!.renderPage(rawPdfIdx, 1404, 1872)
+                    val outBmp = if (isDarkMode || rmPage != null) {
+                        val mutable = Bitmap.createBitmap(rawPdfBmp.width, rawPdfBmp.height, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(mutable)
+                        val pdfPaint = if (isDarkMode) {
+                            Paint().apply {
+                                colorFilter = ColorMatrixColorFilter(
+                                    ColorMatrix(
+                                        floatArrayOf(
+                                            -0.85f, 0f, 0f, 0f, 232f,
+                                            0f, -0.85f, 0f, 0f, 232f,
+                                            0f, 0f, -0.85f, 0f, 235f,
+                                            0f, 0f, 0f, 1f, 0f
+                                        )
+                                    )
+                                )
+                            }
+                        } else null
+                        canvas.drawBitmap(rawPdfBmp, 0f, 0f, pdfPaint)
+                        rawPdfBmp.recycle()
+                        if (rmPage != null) {
+                            RmPageCanvasRenderer.drawRmOverlay(canvas, rmPage, isDarkMode, mutable.width, mutable.height)
+                        }
+                        mutable
+                    } else {
+                        rawPdfBmp
+                    }
+                    outBmp
+                }
+
+                epubPages.isNotEmpty() -> {
+                    val lines = epubPages.getOrElse(pageIdx.coerceIn(0, epubPages.lastIndex)) { emptyList() }
+                    val bmp = RmPageCanvasRenderer.renderEpubTextPage(lines, pageNum, totalPages, isDarkMode)
+                    if (rmPage != null) {
+                        RmPageCanvasRenderer.drawRmOverlay(Canvas(bmp), rmPage, isDarkMode, bmp.width, bmp.height)
+                    }
+                    bmp
+                }
+
+                else -> {
+                    RmPageCanvasRenderer.renderNotebookPage(rmPage, isDarkMode, 1404, 1872)
                 }
             }
         }
     }
 
-    // Render left & right PDF pages on page change
-    LaunchedEffect(leftPage, rightPage, pdfRenderer) {
-        val renderer = pdfRenderer
-        if (renderer != null) {
-            currentBitmap = renderer.renderPage(leftPage - 1)
-            rightBitmap = rightPage?.let { renderer.renderPage(it - 1) }
+    // Render active page(s) and prefetch adjacent .rm blobs in background
+    LaunchedEffect(document.id, leftPage, rightPage, pdfRenderer, epubPages, isLoadingFile, isDarkMode, retryToken) {
+        if (isLoadingFile) return@LaunchedEffect
+        isPageRendering = true
+        leftBitmap = loadCompositePage(leftPage)
+        rightBitmap = rightPage?.let { loadCompositePage(it) }
+        isPageRendering = false
+
+        // Background prefetch adjacent .rm blobs (matching Docker preloadAdjacentPages)
+        if (blobStore != null && cloudClient != null) {
+            launch(Dispatchers.IO) {
+                for (adj in listOf(currentPage + 1, currentPage + 2, currentPage - 1)) {
+                    if (adj in 1..totalPages) {
+                        val h = DocumentExporter.resolveRmBlobHash(document, adj - 1)
+                        if (!h.isNullOrBlank() && !blobStore.hasBlob(h)) {
+                            val k = document.subfiles.entries.firstOrNull { it.value == h }?.key ?: ""
+                            runCatching { blobStore.putBlob(h, cloudClient.getBlob(h, k)) }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Extract table of contents
     val tocEntries = remember(pdfRenderer?.sourceFile, totalPages) {
         val f = pdfRenderer?.sourceFile
-        if (f != null && f.exists()) {
-            PdfOutlineParser.extractToc(f, totalPages)
-        } else {
-            PdfOutlineParser.extractToc(File(""), totalPages)
-        }
+        if (f != null && f.exists()) PdfOutlineParser.extractToc(f, totalPages)
+        else PdfOutlineParser.extractToc(File(""), totalPages)
     }
 
-    DisposableEffect(pdfRenderer) {
-        onDispose {
-            pdfRenderer?.close()
-        }
+    val activeRenderer = pdfRenderer
+    DisposableEffect(activeRenderer) {
+        onDispose { activeRenderer?.close() }
     }
 
-    val canvasBackground = if (isDarkMode) Zinc900 else Color.White
-    val inkColor = if (isDarkMode) Color(0xFFF4F4F5) else Color(0xFF18181B)
-
-    val darkColorMatrix = remember {
-        ColorMatrix(
-            floatArrayOf(
-                -0.85f, 0f, 0f, 0f, 230f,
-                0f, -0.85f, 0f, 0f, 230f,
-                0f, 0f, -0.85f, 0f, 230f,
-                0f, 0f, 0f, 1f, 0f
-            )
-        )
-    }
+    val canvasBackground = if (isDarkMode) Zinc900 else Color(0xFFF4F4F5)
+    val swipeThresholdPx = with(density) { 64.dp.toPx() }
+    val pageStep = if (isDualPageMode) 2 else 1
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(canvasBackground)
-            // Two-finger pull down gesture detector for Favorites Shelf
-            .pointerInput(Unit) {
+            .onSizeChanged { viewportSize = it }
+            // Pinch-to-zoom, focal pan when zoomed, and horizontal swipe page turn at 1x
+            .pointerInput(isDrawingMode, fitMode, isDualPageMode, totalPages) {
+                if (isDrawingMode) return@pointerInput
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var wasMultiTouch = false
+                    var totalSwipeX = 0f
+                    var totalSwipeY = 0f
+
                     do {
                         val event = awaitPointerEvent()
-                        if (event.changes.size >= 2) {
-                            val yDeltas = event.changes.map { it.position.y - it.previousPosition.y }
-                            if (yDeltas.all { it > 18f }) {
-                                showFavoritesShelf = true
-                                event.changes.forEach { it.consume() }
+                        val pressed = event.changes.filter { it.pressed }
+                        if (pressed.size >= 2) {
+                            wasMultiTouch = true
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            val centroid = event.calculateCentroid(useCurrent = false)
+                            if (zoomChange != 1f || panChange != Offset.Zero) {
+                                val oldScale = zoomScale
+                                val newScale = (oldScale * zoomChange).coerceIn(1f, 4.5f)
+                                val center = Offset(size.width / 2f, size.height / 2f)
+                                val focal = if (centroid != Offset.Unspecified) centroid - center else Offset.Zero
+                                val scaleRatio = newScale / oldScale
+                                val rawOffset = (panOffset - focal) * scaleRatio + focal + panChange
+                                zoomScale = newScale
+                                panOffset = clampPan(rawOffset, newScale)
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            }
+                        } else if (pressed.size == 1 && !wasMultiTouch) {
+                            val pan = event.calculatePan()
+                            if (zoomScale > 1.04f) {
+                                if (pan != Offset.Zero) {
+                                    panOffset = clampPan(panOffset + pan, zoomScale)
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            } else if (fitMode == FitMode.FIT_PAGE) {
+                                totalSwipeX += pan.x
+                                totalSwipeY += pan.y
                             }
                         }
                     } while (event.changes.any { it.pressed })
-                }
-            }
-            // Edge-tap page turn detector
-            .pointerInput(isDrawingMode, isDualPageMode, totalPages) {
-                if (!isDrawingMode) {
-                    detectTapGestures { offset ->
-                        val screenWidth = size.width
-                        val x = offset.x
-                        val pageStep = if (isDualPageMode) 2 else 1
-                        when {
-                            x < screenWidth * 0.22f -> {
-                                if (currentPage > 1) {
-                                    currentPage = (currentPage - pageStep).coerceAtLeast(1)
-                                }
-                            }
-                            x > screenWidth * 0.78f -> {
-                                if (currentPage < totalPages) {
-                                    currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
-                                }
-                            }
-                            else -> {
-                                isHudVisible = !isHudVisible
+
+                    if (zoomScale < 1.03f) {
+                        resetZoom()
+                    }
+                    if (!wasMultiTouch && zoomScale <= 1.04f && fitMode == FitMode.FIT_PAGE) {
+                        if (abs(totalSwipeX) > swipeThresholdPx && abs(totalSwipeX) > abs(totalSwipeY) * 1.35f) {
+                            if (totalSwipeX < 0 && currentPage < totalPages) {
+                                currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
+                            } else if (totalSwipeX > 0 && currentPage > 1) {
+                                currentPage = (currentPage - pageStep).coerceAtLeast(1)
                             }
                         }
                     }
                 }
+            }
+            // Double-tap 2.25x zoom toggle + edge-tap page turns (disabled while zoomed)
+            .pointerInput(isDrawingMode, isDualPageMode, totalPages) {
+                if (isDrawingMode) return@pointerInput
+                detectTapGestures(
+                    onDoubleTap = { tapOffset ->
+                        if (zoomScale > 1.08f) {
+                            resetZoom()
+                        } else {
+                            val target = 2.25f
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            val focal = tapOffset - center
+                            zoomScale = target
+                            panOffset = clampPan(-focal * (target - 1f), target)
+                        }
+                    },
+                    onTap = { tapOffset ->
+                        if (zoomScale > 1.05f) {
+                            isHudVisible = !isHudVisible
+                        } else {
+                            val x = tapOffset.x
+                            when {
+                                x < size.width * 0.22f -> {
+                                    if (currentPage > 1) currentPage = (currentPage - pageStep).coerceAtLeast(1)
+                                }
+                                x > size.width * 0.78f -> {
+                                    if (currentPage < totalPages) currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
+                                }
+                                else -> isHudVisible = !isHudVisible
+                            }
+                        }
+                    }
+                )
             }
     ) {
-        // Document Page Content (Single Page, Dual-Page 2-Up, or Tabletop Flex Mode)
-        Column(
+        // Main Viewport
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(if (isFullscreen) 4.dp else 16.dp)
+                .padding(if (isFullscreen) 2.dp else 10.dp)
+                .graphicsLayer {
+                    scaleX = zoomScale
+                    scaleY = zoomScale
+                    translationX = panOffset.x
+                    translationY = panOffset.y
+                }
         ) {
-            // Main Canvas Area
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(if (isFlexMode) 0.58f else 1f)
-            ) {
-                when {
-                    isLoadingFile -> {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
-                                Text("Downloading document from reMarkable Cloud...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-
-                    isDualPageMode && rightPage != null -> {
-                        // Dual-Page Spread (2-Up View) for Unfolded Foldable Screen
-                        Row(
-                            modifier = Modifier.fillMaxSize(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Left Page
-                            Surface(
-                                color = if (isDarkMode) Zinc900 else Color(0xFFFAFAFA),
-                                shape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp, topEnd = 4.dp, bottomEnd = 4.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, if (isDarkMode) Zinc800 else Color(0xFFE4E4E7)),
-                                shadowElevation = 4.dp,
-                                modifier = Modifier.weight(1f).fillMaxHeight()
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    if (isPdf && currentBitmap != null) {
-                                        Image(
-                                            bitmap = currentBitmap!!.asImageBitmap(),
-                                            contentDescription = "Page $leftPage",
-                                            contentScale = ContentScale.Fit,
-                                            colorFilter = if (isDarkMode) ColorFilter.colorMatrix(darkColorMatrix) else null,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    } else {
-                                        NotebookTemplatePage(title = document.visibleName, pageNum = leftPage, totalPages = totalPages, inkColor = inkColor, isDarkMode = isDarkMode)
-                                    }
-                                    DrawingCanvas(
-                                        isDarkMode = isDarkMode,
-                                        isDrawingEnabled = isDrawingMode,
-                                        strokes = leftStrokes,
-                                        selectedTool = selectedTool,
-                                        selectedColor = selectedColor,
-                                        onStrokesChanged = { updated ->
-                                            pageStrokesMap = pageStrokesMap + (leftPage to updated)
-                                            annotationStore?.saveStrokes(document.id, leftPage, updated)
-                                        },
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                            }
-
-                            // Center Book Crease / Spine
-                            Box(
-                                modifier = Modifier
-                                    .width(3.dp)
-                                    .fillMaxHeight(0.96f)
-                                    .background(if (isDarkMode) Zinc800 else Color(0xFFD4D4D8), shape = RoundedCornerShape(2.dp))
+            when {
+                isLoadingFile -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            CircularProgressIndicator(modifier = Modifier.size(38.dp))
+                            Text(
+                                "Downloading from reMarkable Cloud...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-
-                            // Right Page
-                            Surface(
-                                color = if (isDarkMode) Zinc900 else Color(0xFFFAFAFA),
-                                shape = RoundedCornerShape(topEnd = 12.dp, bottomEnd = 12.dp, topStart = 4.dp, bottomStart = 4.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, if (isDarkMode) Zinc800 else Color(0xFFE4E4E7)),
-                                shadowElevation = 4.dp,
-                                modifier = Modifier.weight(1f).fillMaxHeight()
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    if (isPdf && rightBitmap != null) {
-                                        Image(
-                                            bitmap = rightBitmap!!.asImageBitmap(),
-                                            contentDescription = "Page $rightPage",
-                                            contentScale = ContentScale.Fit,
-                                            colorFilter = if (isDarkMode) ColorFilter.colorMatrix(darkColorMatrix) else null,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    } else {
-                                        NotebookTemplatePage(title = document.visibleName, pageNum = rightPage, totalPages = totalPages, inkColor = inkColor, isDarkMode = isDarkMode)
-                                    }
-                                    DrawingCanvas(
-                                        isDarkMode = isDarkMode,
-                                        isDrawingEnabled = isDrawingMode,
-                                        strokes = rightStrokes,
-                                        selectedTool = selectedTool,
-                                        selectedColor = selectedColor,
-                                        onStrokesChanged = { updated ->
-                                            pageStrokesMap = pageStrokesMap + (rightPage to updated)
-                                            annotationStore?.saveStrokes(document.id, rightPage, updated)
-                                        },
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                }
-                            }
                         }
                     }
+                }
 
-                    else -> {
-                        // Single Page Layout (Phone & Normal Mode)
+                loadError != null -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Surface(
-                            color = if (isDarkMode) Zinc900 else Color(0xFFFAFAFA),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, if (isDarkMode) Zinc800 else Color(0xFFE4E4E7)),
-                            shadowElevation = 4.dp,
-                            modifier = Modifier.fillMaxSize()
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 4.dp,
+                            modifier = Modifier.padding(24.dp).widthIn(max = 420.dp)
                         ) {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                if (isPdf && currentBitmap != null) {
-                                    Image(
-                                        bitmap = currentBitmap!!.asImageBitmap(),
-                                        contentDescription = "Page $currentPage",
-                                        contentScale = ContentScale.Fit,
-                                        colorFilter = if (isDarkMode) ColorFilter.colorMatrix(darkColorMatrix) else null,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                } else {
-                                    NotebookTemplatePage(title = document.visibleName, pageNum = currentPage, totalPages = totalPages, inkColor = inkColor, isDarkMode = isDarkMode)
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(Icons.Default.CloudOff, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(40.dp))
+                                Text("Could not load document", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text(loadError!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Button(onClick = { retryToken++ }) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Retry Download")
                                 }
-                                DrawingCanvas(
-                                    isDarkMode = isDarkMode,
-                                    isDrawingEnabled = isDrawingMode,
-                                    strokes = leftStrokes,
-                                    selectedTool = selectedTool,
-                                    selectedColor = selectedColor,
-                                    onStrokesChanged = { updated ->
-                                        pageStrokesMap = pageStrokesMap + (currentPage to updated)
-                                        annotationStore?.saveStrokes(document.id, currentPage, updated)
-                                    },
-                                    modifier = Modifier.fillMaxSize()
-                                )
                             }
                         }
                     }
                 }
-            }
 
-            // Tabletop Flex Mode Control Console (Lower Half)
-            if (isFlexMode) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(20.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    modifier = Modifier.fillMaxWidth().weight(0.42f)
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize().padding(16.dp),
-                        verticalArrangement = Arrangement.SpaceBetween
+                isDualPageMode && rightPage != null -> {
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Scrubber Slider
-                        Column {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = if (isDualPageMode && rightPage != null) "Pages $leftPage-$rightPage of $totalPages" else "Page $currentPage of $totalPages",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Tabletop Flex Mode Active",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                            Slider(
-                                value = currentPage.toFloat(),
-                                onValueChange = { currentPage = it.toInt().coerceIn(1, totalPages) },
-                                valueRange = 1f..totalPages.toFloat(),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        // Inking Palette Bar
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                FilterChip(
-                                    selected = selectedTool == ToolType.FINELINER,
-                                    onClick = { selectedTool = ToolType.FINELINER; isDrawingMode = true },
-                                    label = { Text("Pen") }
-                                )
-                                FilterChip(
-                                    selected = selectedTool == ToolType.HIGHLIGHTER,
-                                    onClick = { selectedTool = ToolType.HIGHLIGHTER; isDrawingMode = true },
-                                    label = { Text("Highlighter") }
-                                )
-                                FilterChip(
-                                    selected = selectedTool == ToolType.ERASER,
-                                    onClick = { selectedTool = ToolType.ERASER; isDrawingMode = true },
-                                    label = { Text("Eraser") }
-                                )
-                            }
-
-                            // Color swatches
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                val colors = listOf(PenColor.BLACK, PenColor.BLUE, PenColor.RED, PenColor.YELLOW)
-                                colors.forEach { c ->
-                                    val swatchColor = when (c) {
-                                        PenColor.BLACK -> Color(0xFF18181B)
-                                        PenColor.BLUE -> Color(0xFF2563EB)
-                                        PenColor.RED -> Color(0xFFDC2626)
-                                        PenColor.YELLOW -> Color(0xFFFBBF24)
-                                        else -> Color.DarkGray
-                                    }
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = swatchColor,
-                                        border = if (selectedColor == c) androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-                                        modifier = Modifier.size(26.dp)
-                                    ) {
-                                        IconButton(onClick = { selectedColor = c; isDrawingMode = true }) {}
-                                    }
-                                }
-                            }
-                        }
-
-                        // Quick Navigation Action Row
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(onClick = { showThumbnailGrid = true }, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Page Grid")
-                            }
-                            OutlinedButton(onClick = { showTocDialog = true }, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Contents")
-                            }
-                            Button(onClick = { isFlexMode = false }, modifier = Modifier.weight(1f)) {
-                                Text("Full Canvas")
-                            }
-                        }
+                        ReaderPageCard(
+                            bitmap = leftBitmap,
+                            pageNum = leftPage,
+                            isDarkMode = isDarkMode,
+                            fitWidth = false,
+                            isDrawingMode = isDrawingMode,
+                            strokes = pageStrokesMap[leftPage].orEmpty(),
+                            onStrokesChanged = { updated ->
+                                pageStrokesMap = pageStrokesMap + (leftPage to updated)
+                                annotationStore?.saveStrokes(document.id, leftPage, updated)
+                            },
+                            modifier = Modifier.weight(1f).fillMaxHeight()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(2.dp)
+                                .fillMaxHeight(0.96f)
+                                .background(if (isDarkMode) Zinc800 else Color(0xFFD4D4D8))
+                        )
+                        ReaderPageCard(
+                            bitmap = rightBitmap,
+                            pageNum = rightPage,
+                            isDarkMode = isDarkMode,
+                            fitWidth = false,
+                            isDrawingMode = isDrawingMode,
+                            strokes = pageStrokesMap[rightPage].orEmpty(),
+                            onStrokesChanged = { updated ->
+                                pageStrokesMap = pageStrokesMap + (rightPage to updated)
+                                annotationStore?.saveStrokes(document.id, rightPage, updated)
+                            },
+                            modifier = Modifier.weight(1f).fillMaxHeight()
+                        )
                     }
+                }
+
+                else -> {
+                    ReaderPageCard(
+                        bitmap = leftBitmap,
+                        pageNum = currentPage,
+                        isDarkMode = isDarkMode,
+                        fitWidth = fitMode == FitMode.FIT_WIDTH,
+                        isDrawingMode = isDrawingMode,
+                        strokes = pageStrokesMap[currentPage].orEmpty(),
+                        onStrokesChanged = { updated ->
+                            pageStrokesMap = pageStrokesMap + (currentPage to updated)
+                            annotationStore?.saveStrokes(document.id, currentPage, updated)
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
             }
         }
 
         // Auto-Hiding Top HUD
         AnimatedVisibility(
-            visible = isHudVisible && !isFlexMode,
+            visible = isHudVisible,
             enter = fadeIn() + slideInVertically { -it },
             exit = fadeOut() + slideOutVertically { -it },
             modifier = Modifier.align(Alignment.TopCenter)
@@ -512,7 +586,7 @@ fun ReaderScreen(
                 modifier = Modifier.fillMaxWidth().statusBarsPadding()
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -524,16 +598,15 @@ fun ReaderScreen(
                             IconButton(onClick = onToggleFullscreen) {
                                 Icon(
                                     imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                    contentDescription = "Toggle Sidebar"
+                                    contentDescription = "Toggle Fullscreen"
                                 )
                             }
                         }
                     }
 
-                    // Title & Bookmark Ribbon
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.weight(1f, fill = false).padding(horizontal = 8.dp)
+                        modifier = Modifier.weight(1f, fill = false).padding(horizontal = 4.dp)
                     ) {
                         Text(
                             text = document.visibleName,
@@ -554,41 +627,52 @@ fun ReaderScreen(
                             Icon(
                                 imageVector = if (isCurrentPageBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
                                 contentDescription = "Bookmark Page",
-                                tint = if (isCurrentPageBookmarked) Color(0xFFF59E0B) else Color.White.copy(alpha = 0.7f)
+                                tint = if (isCurrentPageBookmarked) Color(0xFFF59E0B) else Color.White.copy(alpha = 0.75f)
                             )
                         }
                     }
 
-                    // Action Icons
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        // Drawing / Inking Toggle
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Fit Width / Fit Page Toggle (matches Docker btnFitToggle)
                         IconButton(
-                            onClick = { isDrawingMode = !isDrawingMode },
+                            onClick = {
+                                fitMode = if (fitMode == FitMode.FIT_PAGE) FitMode.FIT_WIDTH else FitMode.FIT_PAGE
+                                resetZoom()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = if (fitMode == FitMode.FIT_PAGE) Icons.Default.FitScreen else Icons.Default.SwapVert,
+                                contentDescription = if (fitMode == FitMode.FIT_PAGE) "Switch to Fit Width" else "Switch to Fit Page"
+                            )
+                        }
+
+                        // Dark Mode Toggle (matches Docker btnPageDarkToggle)
+                        IconButton(onClick = { isDarkMode = !isDarkMode }) {
+                            Icon(
+                                imageVector = if (isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Toggle Dark Page Theme"
+                            )
+                        }
+
+                        // Stylus / Touch Drawing Toggle
+                        IconButton(
+                            onClick = {
+                                isDrawingMode = !isDrawingMode
+                                if (isDrawingMode) resetZoom()
+                            },
                             colors = IconButtonDefaults.iconButtonColors(
                                 containerColor = if (isDrawingMode) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                                 contentColor = if (isDrawingMode) MaterialTheme.colorScheme.onPrimaryContainer else Color.White
                             )
                         ) {
-                            Icon(Icons.Default.Draw, contentDescription = "Draw on file")
+                            Icon(Icons.Default.Draw, contentDescription = "Annotate")
                         }
 
-                        // Page Sorter / Thumbnail Grid
+                        // Page Thumbnail Grid
                         IconButton(onClick = { showThumbnailGrid = true }) {
                             Icon(Icons.Default.GridView, contentDescription = "Page Grid")
                         }
 
-                        // Tabletop Flex Mode Toggle
-                        IconButton(
-                            onClick = { isFlexMode = !isFlexMode },
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (isFlexMode) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
-                                contentColor = if (isFlexMode) MaterialTheme.colorScheme.onSecondaryContainer else Color.White
-                            )
-                        ) {
-                            Icon(Icons.Default.Laptop, contentDescription = "Flex Mode")
-                        }
-
-                        // Overflow Menu for TOC, Dual-Page, Sleep Screen, Export PDF
                         Box {
                             IconButton(onClick = { showOverflowMenu = true }) {
                                 Icon(Icons.Default.MoreVert, contentDescription = "More Options")
@@ -599,6 +683,15 @@ fun ReaderScreen(
                                 onDismissRequest = { showOverflowMenu = false }
                             ) {
                                 DropdownMenuItem(
+                                    text = { Text(if (fitMode == FitMode.FIT_PAGE) "Fit Width" else "Fit Page") },
+                                    leadingIcon = { Icon(Icons.Default.FitScreen, contentDescription = null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        fitMode = if (fitMode == FitMode.FIT_PAGE) FitMode.FIT_WIDTH else FitMode.FIT_PAGE
+                                        resetZoom()
+                                    }
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Table of Contents") },
                                     leadingIcon = { Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null) },
                                     onClick = {
@@ -606,16 +699,6 @@ fun ReaderScreen(
                                         showTocDialog = true
                                     }
                                 )
-
-                                DropdownMenuItem(
-                                    text = { Text("Record Meeting Notes") },
-                                    leadingIcon = { Icon(Icons.Default.Mic, contentDescription = null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        onOpenMeetingRecorder()
-                                    }
-                                )
-
                                 DropdownMenuItem(
                                     text = { Text(if (isDualPageMode) "Single Page View" else "Dual-Page Spread (2-Up)") },
                                     leadingIcon = { Icon(Icons.Default.AutoStories, contentDescription = null) },
@@ -624,7 +707,34 @@ fun ReaderScreen(
                                         isDualPageMode = !isDualPageMode
                                     }
                                 )
-
+                                DropdownMenuItem(
+                                    text = { Text("Pinned Favorites") },
+                                    leadingIcon = { Icon(Icons.Default.Star, contentDescription = null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        showFavoritesShelf = true
+                                    }
+                                )
+                                if (pdfRenderer?.sourceFile != null && onOptimizeCurrentPdf != null) {
+                                    DropdownMenuItem(
+                                        text = { Text("Optimize for reMarkable") },
+                                        leadingIcon = { Icon(Icons.Default.FlashOn, contentDescription = null) },
+                                        onClick = {
+                                            showOverflowMenu = false
+                                            pdfRenderer?.sourceFile?.let { f ->
+                                                onOptimizeCurrentPdf(f, document.visibleName)
+                                            }
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Record Meeting Notes") },
+                                    leadingIcon = { Icon(Icons.Default.Mic, contentDescription = null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onOpenMeetingRecorder()
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Sleep Screen Studio") },
                                     leadingIcon = { Icon(Icons.Default.Palette, contentDescription = null) },
@@ -633,39 +743,26 @@ fun ReaderScreen(
                                         showSleepScreenStudio = true
                                     }
                                 )
-
                                 DropdownMenuItem(
                                     text = { Text("Export Annotated PDF") },
                                     leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                                     onClick = {
                                         showOverflowMenu = false
                                         coroutineScope.launch {
-                                            isExportingPdf = true
                                             try {
                                                 val file = DocumentExporter.exportAnnotatedPdf(
                                                     context = context,
-                                                    docId = document.id,
-                                                    docTitle = document.visibleName,
+                                                    document = document,
                                                     totalPages = totalPages,
                                                     pdfRenderer = pdfRenderer,
+                                                    blobStore = blobStore,
                                                     annotationStore = annotationStore
                                                 )
                                                 DocumentExporter.shareExportedFile(context, file, "application/pdf", "${document.visibleName} (Annotated)")
                                             } catch (e: Exception) {
                                                 Toast.makeText(context, "Export error: ${e.message}", Toast.LENGTH_LONG).show()
-                                            } finally {
-                                                isExportingPdf = false
                                             }
                                         }
-                                    }
-                                )
-
-                                DropdownMenuItem(
-                                    text = { Text(if (isDarkMode) "Light Mode" else "Dark Invert Mode") },
-                                    leadingIcon = { Icon(if (isDarkMode) Icons.Default.LightMode else Icons.Default.DarkMode, contentDescription = null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        isDarkMode = !isDarkMode
                                     }
                                 )
                             }
@@ -675,52 +772,72 @@ fun ReaderScreen(
             }
         }
 
-        // Auto-Hiding Bottom HUD (Page Turn Controls)
+        // Bottom Navigation & Zoom Reset Pill (matches Docker reader-nav + page jump)
         AnimatedVisibility(
-            visible = isHudVisible && !isDrawingMode && !isFlexMode,
+            visible = (isHudVisible || zoomScale > 1.08f) && !isDrawingMode,
             enter = fadeIn() + slideInVertically { it },
             exit = fadeOut() + slideOutVertically { it },
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 16.dp)
         ) {
-            Surface(
-                color = Zinc900.copy(alpha = 0.94f),
-                contentColor = Color.White,
-                shape = CircleShape,
-                shadowElevation = 8.dp
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                Surface(
+                    color = Zinc900.copy(alpha = 0.94f),
+                    contentColor = Color.White,
+                    shape = CircleShape,
+                    shadowElevation = 8.dp
                 ) {
-                    val step = if (isDualPageMode) 2 else 1
-                    IconButton(
-                        onClick = { if (currentPage > 1) currentPage = (currentPage - step).coerceAtLeast(1) },
-                        enabled = currentPage > 1
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.ChevronLeft, contentDescription = "Previous Page")
-                    }
+                        IconButton(
+                            onClick = { if (currentPage > 1) currentPage = (currentPage - pageStep).coerceAtLeast(1) },
+                            enabled = currentPage > 1
+                        ) {
+                            Icon(Icons.Default.ChevronLeft, contentDescription = "Previous Page")
+                        }
 
-                    TextButton(onClick = { showThumbnailGrid = true }) {
-                        Text(
-                            text = if (isDualPageMode && rightPage != null) "pp. $leftPage-$rightPage / $totalPages" else "$currentPage / $totalPages",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
+                        TextButton(onClick = { showPageJumpDialog = true }) {
+                            if (isPageRendering) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(
+                                text = if (isDualPageMode && rightPage != null) "pp. $leftPage-$rightPage / $totalPages" else "Page $currentPage of $totalPages",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
 
-                    IconButton(
-                        onClick = { if (currentPage < totalPages) currentPage = (currentPage + step).coerceAtMost(totalPages) },
-                        enabled = currentPage < totalPages
+                        IconButton(
+                            onClick = { if (currentPage < totalPages) currentPage = (currentPage + pageStep).coerceAtMost(totalPages) },
+                            enabled = currentPage < totalPages
+                        ) {
+                            Icon(Icons.Default.ChevronRight, contentDescription = "Next Page")
+                        }
+                    }
+                }
+
+                if (zoomScale > 1.08f) {
+                    FilledTonalButton(
+                        onClick = { resetZoom() },
+                        shape = CircleShape
                     ) {
-                        Icon(Icons.Default.ChevronRight, contentDescription = "Next Page")
+                        Text("${(zoomScale * 100).toInt()}% ↺", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
         }
 
-        // Two-Finger Pull Down Favorites Shelf
         FavoritesShelf(
             isVisible = showFavoritesShelf,
             documents = allDocuments,
@@ -731,37 +848,67 @@ fun ReaderScreen(
             onDismiss = { showFavoritesShelf = false }
         )
 
-        // Page Sorter Grid Modal
+        if (showPageJumpDialog) {
+            var pageInput by remember(currentPage) { mutableStateOf(currentPage.toString()) }
+            AlertDialog(
+                onDismissRequest = { showPageJumpDialog = false },
+                title = { Text("Jump to Page") },
+                text = {
+                    OutlinedTextField(
+                        value = pageInput,
+                        onValueChange = { pageInput = it.filter(Char::isDigit) },
+                        label = { Text("Page (1 – $totalPages)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            pageInput.toIntOrNull()?.let { target ->
+                                currentPage = target.coerceIn(1, totalPages)
+                            }
+                            showPageJumpDialog = false
+                        }
+                    ) { Text("Go") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showPageJumpDialog = false
+                            showThumbnailGrid = true
+                        }
+                    ) { Text("Browse Grid") }
+                }
+            )
+        }
+
         if (showThumbnailGrid) {
             PageThumbnailGridDialog(
-                docId = document.id,
+                document = document,
                 totalPages = totalPages,
                 currentPage = currentPage,
                 pdfRenderer = pdfRenderer,
+                blobStore = blobStore,
                 annotationStore = annotationStore,
-                onSelectPage = { selectedPage ->
-                    currentPage = selectedPage
-                },
+                onSelectPage = { currentPage = it },
                 onDismiss = { showThumbnailGrid = false }
             )
         }
 
-        // Table of Contents Modal
         if (showTocDialog) {
             PdfTocDialog(
                 tocEntries = tocEntries,
                 currentPage = currentPage,
-                onSelectPage = { selectedPage ->
-                    currentPage = selectedPage
-                },
+                onSelectPage = { currentPage = it },
                 onDismiss = { showTocDialog = false }
             )
         }
 
-        // Sleep Screen Studio Modal
         if (showSleepScreenStudio) {
             SleepScreenStudioDialog(
-                sourceBitmap = currentBitmap,
+                sourceBitmap = leftBitmap,
                 documentTitle = document.visibleName,
                 onDismiss = { showSleepScreenStudio = false }
             )
@@ -770,43 +917,52 @@ fun ReaderScreen(
 }
 
 @Composable
-private fun NotebookTemplatePage(
-    title: String,
+private fun ReaderPageCard(
+    bitmap: Bitmap?,
     pageNum: Int,
-    totalPages: Int,
-    inkColor: Color,
-    isDarkMode: Boolean
+    isDarkMode: Boolean,
+    fitWidth: Boolean,
+    isDrawingMode: Boolean,
+    strokes: List<DrawnStroke>,
+    onStrokesChanged: (List<DrawnStroke>) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = inkColor.copy(alpha = 0.9f)
-            )
-            Spacer(modifier = Modifier.height(16.dp))
+    val scrollState = rememberScrollState()
+    LaunchedEffect(pageNum, fitWidth) {
+        if (fitWidth) scrollState.scrollTo(0)
+    }
 
-            // Ruled Notebook Template
-            Column(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                verticalArrangement = Arrangement.SpaceEvenly
-            ) {
-                repeat(20) {
-                    HorizontalDivider(
-                        color = if (isDarkMode) Zinc800.copy(alpha = 0.5f) else Color(0xFFE4E4E7).copy(alpha = 0.6f),
-                        thickness = 1.dp
-                    )
-                }
+    Surface(
+        color = if (isDarkMode) Zinc900 else Color.White,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, if (isDarkMode) Zinc800 else Color(0xFFE4E4E7)),
+        shadowElevation = 3.dp,
+        modifier = modifier
+    ) {
+        val innerMod = if (fitWidth && !isDrawingMode) {
+            Modifier.fillMaxSize().verticalScroll(scrollState)
+        } else {
+            Modifier.fillMaxSize()
+        }
+
+        Box(modifier = innerMod, contentAlignment = Alignment.Center) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Page $pageNum",
+                    contentScale = if (fitWidth) ContentScale.FillWidth else ContentScale.Fit,
+                    modifier = if (fitWidth) Modifier.fillMaxWidth() else Modifier.fillMaxSize()
+                )
+            } else {
+                CircularProgressIndicator(modifier = Modifier.size(30.dp))
             }
 
-            Text(
-                text = "Page $pageNum of $totalPages",
-                style = MaterialTheme.typography.labelSmall,
-                color = inkColor.copy(alpha = 0.4f)
+            DrawingCanvas(
+                isDarkMode = isDarkMode,
+                isDrawingEnabled = isDrawingMode,
+                strokes = strokes,
+                onStrokesChanged = onStrokesChanged,
+                modifier = Modifier.matchParentSize()
             )
         }
     }

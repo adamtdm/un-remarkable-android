@@ -15,7 +15,8 @@ data class DocumentMetadata(
     @SerialName("pageCount") val pageCount: Int = 0,
     @SerialName("fileType") val fileType: String = "",
     @SerialName("formatVersion") val formatVersion: Int = 1,
-    @SerialName("tags") val tags: List<String> = emptyList()
+    @SerialName("tags") val tags: List<String> = emptyList(),
+    val pages: List<PageRef> = emptyList()
 ) {
     val isFolder: Boolean
         get() = type == TYPE_COLLECTION
@@ -32,7 +33,7 @@ data class DocumentMetadata(
         fun fromJson(jsonString: String): DocumentMetadata {
             return try {
                 json.decodeFromString<DocumentMetadata>(jsonString)
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 DocumentMetadata(visibleName = "Untitled")
             }
         }
@@ -58,23 +59,21 @@ data class DocumentMetadata(
             }
 
             var fileType = if (type == TYPE_COLLECTION) "" else "notebook"
-            var pageCount = 0
+            var rawPageCount = 0
+            val parsedPages = mutableListOf<PageRef>()
             val tags = mutableListOf<String>()
 
             if (!contentJson.isNullOrBlank()) {
                 try {
                     val element = json.parseToJsonElement(contentJson).jsonObject
                     if (visibleName.isBlank()) {
-                        val cvn = element["visibleName"]?.jsonPrimitive?.contentOrNull
-                        if (!cvn.isNullOrBlank()) visibleName = cvn
+                        visibleName = element["visibleName"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     }
                     if (parent.isBlank()) {
-                        val cp = element["parent"]?.jsonPrimitive?.contentOrNull
-                        if (!cp.isNullOrBlank()) parent = cp
+                        parent = element["parent"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     }
                     if (lastModified.isBlank()) {
-                        val clm = element["lastModified"]?.jsonPrimitive?.contentOrNull
-                        if (!clm.isNullOrBlank()) lastModified = clm
+                        lastModified = element["lastModified"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     }
                     if (!pinned) {
                         pinned = element["pinned"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -90,41 +89,58 @@ data class DocumentMetadata(
                     if (!rawFileType.isNullOrBlank()) {
                         fileType = rawFileType
                     }
-                    val rawPageCount = element["pageCount"]?.jsonPrimitive?.intOrNull ?: 0
-                    if (rawPageCount > 0) {
-                        pageCount = rawPageCount
+                    rawPageCount = element["pageCount"]?.jsonPrimitive?.intOrNull ?: 0
+
+                    // Parse firmware 3.x cPages (ordered by idx.value, skipping deleted pages)
+                    val cPagesArray = element["cPages"]?.jsonObject?.get("pages")?.jsonArray
+                    if (cPagesArray != null && cPagesArray.isNotEmpty()) {
+                        val active = mutableListOf<Pair<String, PageRef>>()
+                        for ((pos, item) in cPagesArray.withIndex()) {
+                            val obj = item as? JsonObject ?: continue
+                            val pageId = obj["id"]?.jsonPrimitive?.contentOrNull ?: continue
+                            val delEl = obj["deleted"]
+                            val isDel = (delEl as? JsonObject)?.get("value")?.jsonPrimitive?.intOrNull == 1 ||
+                                (delEl as? JsonPrimitive)?.intOrNull == 1 ||
+                                (delEl as? JsonPrimitive)?.booleanOrNull == true
+                            if (isDel) continue
+
+                            val idxVal = (obj["idx"] as? JsonObject)?.get("value")?.jsonPrimitive?.contentOrNull
+                                ?: (obj["idx"] as? JsonPrimitive)?.contentOrNull
+                                ?: String.format("%06d", pos)
+                            val redirEl = obj["redir"]
+                            val redir = (redirEl as? JsonObject)?.get("value")?.jsonPrimitive?.intOrNull
+                                ?: (redirEl as? JsonPrimitive)?.intOrNull
+                                ?: -1
+                            active.add(idxVal to PageRef(pageId = pageId, redir = redir))
+                        }
+                        active.sortBy { it.first }
+                        parsedPages.addAll(active.map { it.second })
                     } else {
-                        val cPagesObj = element["cPages"]?.jsonObject
-                        val cPagesArray = cPagesObj?.get("pages")?.jsonArray
-                        if (cPagesArray != null && cPagesArray.isNotEmpty()) {
-                            pageCount = cPagesArray.count { pageItem ->
-                                val delVal = pageItem.jsonObject["deleted"]
-                                val isDel = delVal?.jsonObject?.get("value")?.jsonPrimitive?.intOrNull == 1 ||
-                                            delVal?.jsonPrimitive?.intOrNull == 1 ||
-                                            delVal?.jsonPrimitive?.booleanOrNull == true
-                                !isDel
-                            }
-                        } else {
-                            val pagesArray = element["pages"]?.jsonArray
-                            if (pagesArray != null) {
-                                pageCount = pagesArray.size
+                        val legacyPages = element["pages"]?.jsonArray
+                        if (legacyPages != null) {
+                            for ((idx, p) in legacyPages.withIndex()) {
+                                val pid = (p as? JsonPrimitive)?.contentOrNull
+                                if (!pid.isNullOrBlank()) {
+                                    parsedPages.add(PageRef(pageId = pid, redir = idx))
+                                }
                             }
                         }
                     }
+
                     val tagsArray = element["tags"]?.jsonArray
                     if (tagsArray != null) {
                         for (item in tagsArray) {
-                            if (item is JsonPrimitive) {
-                                val name = item.contentOrNull
-                                if (!name.isNullOrBlank()) tags.add(name)
-                            } else if (item is JsonObject) {
-                                val name = item["name"]?.jsonPrimitive?.contentOrNull
-                                if (!name.isNullOrBlank()) tags.add(name)
+                            when (item) {
+                                is JsonPrimitive -> item.contentOrNull?.takeIf { it.isNotBlank() }?.let(tags::add)
+                                is JsonObject -> item["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let(tags::add)
+                                else -> {}
                             }
                         }
                     }
                 } catch (_: Exception) {}
             }
+
+            val finalPageCount = if (parsedPages.isNotEmpty()) parsedPages.size else rawPageCount
 
             return DocumentMetadata(
                 visibleName = visibleName,
@@ -133,9 +149,10 @@ data class DocumentMetadata(
                 lastModified = lastModified,
                 pinned = pinned,
                 deleted = deleted,
-                pageCount = pageCount,
+                pageCount = finalPageCount,
                 fileType = fileType,
-                tags = tags
+                tags = tags,
+                pages = parsedPages
             )
         }
     }

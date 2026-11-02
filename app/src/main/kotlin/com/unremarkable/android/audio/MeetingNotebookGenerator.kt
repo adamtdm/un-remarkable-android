@@ -218,11 +218,12 @@ object MeetingNotebookGenerator {
         }
 
         // ================= SAVE TO DISK & PERSISTENT REPOSITORY =================
-        val destinationFile = blobStore.getBlobFile(docId)
-        FileOutputStream(destinationFile).use { out ->
-            pdfDoc.writeTo(out)
-        }
+        val baos = java.io.ByteArrayOutputStream()
+        pdfDoc.writeTo(baos)
         pdfDoc.close()
+        val pdfBytes = baos.toByteArray()
+        val pdfHash = com.unremarkable.core.cloud.FileBlobStore.sha256(pdfBytes)
+        blobStore.putBlob(pdfHash, pdfBytes)
 
         val docItem = DocumentItem(
             id = docId,
@@ -234,8 +235,10 @@ object MeetingNotebookGenerator {
             lastModified = dateTimestamp,
             tags = listOf("Meeting", "Transcript"),
             fileType = "pdf",
-            hash = docId,
-            subfiles = mapOf("$docId.pdf" to docId)
+            hash = pdfHash,
+            subfiles = mapOf("$docId.pdf" to pdfHash),
+            pages = (0 until totalPages).map { idx -> com.unremarkable.core.model.PageRef(UUID.randomUUID().toString(), idx) },
+            localOnly = true
         )
 
         repository.upsertDocument(docItem)

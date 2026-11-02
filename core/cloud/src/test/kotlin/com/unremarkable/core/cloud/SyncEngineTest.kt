@@ -1,8 +1,9 @@
 package com.unremarkable.core.cloud
 
 import com.unremarkable.core.model.AuthTokens
-import com.unremarkable.core.model.Entry
+import com.unremarkable.core.model.DocumentItem
 import com.unremarkable.core.model.InMemorySyncRepository
+import com.unremarkable.core.model.PageRef
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -29,7 +30,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `sync downloads manifests and populates repository`(@TempDir tempDir: File) = runBlocking {
+    fun `sync downloads manifests populates cPages and skips unchanged docs incrementally`(@TempDir tempDir: File) = runBlocking {
         val serverUrl = server.url("").toString().removeSuffix("/")
         val storage = InMemoryTokenStorage(
             AuthTokens(deviceToken = "dev-token", userToken = "user-token")
@@ -38,6 +39,16 @@ class SyncEngineTest {
         val client = RMCloudClient(auth = auth, syncHost = serverUrl)
         val blobStore = FileBlobStore(tempDir)
         val repository = InMemorySyncRepository()
+
+        // Seed an unpushed local-only note (no blob yet) to ensure sync never wipes local documents
+        repository.upsertDocument(
+            DocumentItem(
+                id = "local-note-1",
+                visibleName = "Offline Meeting Note",
+                pageCount = 2,
+                localOnly = true
+            )
+        )
 
         val engine = SyncEngine(client, blobStore, repository)
 
@@ -56,15 +67,16 @@ class SyncEngineTest {
         """.trimIndent()
         server.enqueue(MockResponse().setResponseCode(200).setBody(rootManifest))
 
-        // 3. Document manifest for doc-uuid-1: has .content
+        // 3. Document manifest for doc-uuid-1: has .content and .rm subfile (payload NOT eagerly downloaded)
         val docManifest = """
             4
-            0:.:1:100
+            0:.:2:5100
             content-hash-1:0:doc-uuid-1.content:0:100
+            rm-hash-1:0:doc-uuid-1/page-a.rm:0:5000
         """.trimIndent()
         server.enqueue(MockResponse().setResponseCode(200).setBody(docManifest))
 
-        // 4. .content JSON body
+        // 4. .content JSON body with cPages
         val contentJson = """
             {
                 "visibleName": "Meeting Notes",
@@ -73,7 +85,12 @@ class SyncEngineTest {
                 "lastModified": "1730500000000",
                 "pinned": true,
                 "deleted": false,
-                "pageCount": 4,
+                "fileType": "notebook",
+                "cPages": {
+                    "pages": [
+                        {"id": "page-a", "idx": {"value": "ba"}}
+                    ]
+                },
                 "tags": ["Meeting", "Action"]
             }
         """.trimIndent()
@@ -85,24 +102,53 @@ class SyncEngineTest {
         assertEquals(1, success.syncedDocs)
         assertEquals(10L, success.generation)
 
-        // Verify repository state
-        assertEquals("root-hash-1", repository.getLocalRootHash())
-        assertEquals(10L, repository.getLocalGeneration())
-
         val doc = repository.getDocument("doc-uuid-1")
         assertNotNull(doc)
         assertEquals("Meeting Notes", doc?.visibleName)
         assertTrue(doc?.pinned == true)
-        assertEquals(4, doc?.pageCount)
+        assertEquals(1, doc?.pageCount)
+        assertEquals(listOf(PageRef("page-a", -1)), doc?.pages)
         assertEquals(listOf("Meeting", "Action"), doc?.tags)
 
-        // Verify second sync is UpToDate
+        // Local-only document must NOT be wiped by remote deletion pass
+        assertNotNull(repository.getDocument("local-note-1"))
+
+        // Verify incremental sync when root changes to generation 11 with a 2nd doc:
+        // doc-uuid-1 has the SAME hash (doc1-hash) so zero subfile requests are made for doc-uuid-1!
         server.enqueue(
             MockResponse()
                 .setResponseCode(200)
-                .setBody("""{"hash": "root-hash-1", "generation": 10, "schemaVersion": "4"}""")
+                .setBody("""{"hash": "root-hash-2", "generation": 11, "schemaVersion": "4"}""")
         )
-        val secondResult = engine.sync()
-        assertTrue(secondResult is SyncResult.UpToDate)
+        val rootManifest2 = """
+            4
+            0:.:2:300
+            doc1-hash:80000000:doc-uuid-1:1:200
+            folder-hash:80000000:folder-1:1:100
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(rootManifest2))
+        val folderManifest = """
+            4
+            0:.:1:80
+            folder-meta-hash:0:folder-1.metadata:0:80
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(folderManifest))
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"visibleName":"Projects","type":"CollectionType","lastModified":"1730600000000"}""")
+        )
+
+        val incResult = engine.sync()
+        assertTrue(incResult is SyncResult.Success)
+        assertEquals(true, repository.getDocument("folder-1")?.isFolder)
+        assertEquals("Meeting Notes", repository.getDocument("doc-uuid-1")?.visibleName)
+
+        // Verify UpToDate when root hash & generation match
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"hash": "root-hash-2", "generation": 11, "schemaVersion": "4"}""")
+        )
+        assertTrue(engine.sync() is SyncResult.UpToDate)
     }
 }

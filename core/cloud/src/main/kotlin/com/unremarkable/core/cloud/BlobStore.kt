@@ -61,6 +61,9 @@ class FileBlobStore(private val baseDir: File) : BlobStore {
         // Shard blobs by first 2 chars of hash: blobs/a1/a1b2c3...
         val prefix = if (hash.length >= 2) hash.substring(0, 2) else "xx"
         val dir = File(baseDir, prefix)
+        if (!dir.exists()) {
+            dir.mkdirs()
+        }
         return File(dir, hash)
     }
 

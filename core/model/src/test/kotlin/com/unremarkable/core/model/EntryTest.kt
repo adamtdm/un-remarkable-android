@@ -58,4 +58,36 @@ class EntryTest {
         assertEquals(12, meta.pageCount)
         assertEquals(listOf("Work", "Design"), meta.tags)
     }
+
+    @Test
+    fun `parseFromRaw orders cPages by idx filters deleted and preserves redir`() {
+        val metaJson = """{"visibleName":"Annotated Spec","type":"DocumentType","lastModified":"1730600000000"}"""
+        val contentJson = """
+            {
+                "fileType": "pdf",
+                "pageCount": 99,
+                "cPages": {
+                    "pages": [
+                        {"id": "p-second", "idx": {"value": "bb"}, "redir": {"value": 4}},
+                        {"id": "p-deleted", "idx": {"value": "ba"}, "deleted": {"value": 1}, "redir": {"value": 0}},
+                        {"id": "p-first", "idx": {"value": "ab"}, "redir": {"value": 1}},
+                        {"id": "p-inserted", "idx": {"value": "bc"}}
+                    ]
+                }
+            }
+        """.trimIndent()
+
+        val parsed = DocumentMetadata.parseFromRaw(metaJson, contentJson)
+        assertEquals("Annotated Spec", parsed.visibleName)
+        assertEquals("pdf", parsed.fileType)
+        assertEquals(3, parsed.pageCount)
+        assertEquals(
+            listOf(
+                PageRef("p-first", 1),
+                PageRef("p-second", 4),
+                PageRef("p-inserted", -1)
+            ),
+            parsed.pages
+        )
+    }
 }

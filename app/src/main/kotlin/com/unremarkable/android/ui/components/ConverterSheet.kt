@@ -15,12 +15,15 @@ import com.unremarkable.core.model.DeviceProfile
 @Composable
 fun ConverterSheet(
     fileName: String,
+    hasInputSource: Boolean = true,
+    defaultProfile: DeviceProfile = DeviceProfile.PAPER_PRO,
     isConverting: Boolean = false,
     progressMessage: String = "",
+    onPickFile: (() -> Unit)? = null,
     onDismiss: () -> Unit,
     onStartConversion: (ConverterConfig) -> Unit
 ) {
-    var selectedProfile by remember { mutableStateOf(DeviceProfile.PAPER_PRO) }
+    var selectedProfile by remember(defaultProfile) { mutableStateOf(defaultProfile) }
     var qualityStop by remember { mutableFloatStateOf(3f) }
     var splitSpreads by remember { mutableStateOf(true) }
     var mangaOrder by remember { mutableStateOf(false) }
@@ -28,7 +31,7 @@ fun ConverterSheet(
     val currentProfile = QualityProfiles.getProfile(qualityStop.toInt())
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isConverting) onDismiss() },
         shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
     ) {
         Column(
@@ -39,15 +42,32 @@ fun ConverterSheet(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "⚡ Document & Comic Optimizer",
+                text = "Document & Comic Optimizer",
                 style = MaterialTheme.typography.titleLarge
             )
 
-            Text(
-                text = fileName,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (hasInputSource) fileName else "Select a PDF, CBZ, ZIP, or image to optimize",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                if (onPickFile != null) {
+                    Spacer(modifier = Modifier.width(12.dp))
+                    OutlinedButton(
+                        onClick = onPickFile,
+                        enabled = !isConverting,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text(if (hasInputSource) "Change" else "Choose File")
+                    }
+                }
+            }
 
             HorizontalDivider()
 
@@ -157,10 +177,11 @@ fun ConverterSheet(
                         )
                         onStartConversion(config)
                     },
+                    enabled = hasInputSource,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text("Start Optimization & Send to Tablet")
+                    Text("Optimize & Save to Library")
                 }
             }
         }

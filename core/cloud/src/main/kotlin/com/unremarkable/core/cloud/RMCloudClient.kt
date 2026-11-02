@@ -199,7 +199,10 @@ class RMCloudClient(
         parentId: String = "",
         fileType: String = "pdf"
     ): String = withContext(Dispatchers.IO) {
-        val metaJson = """{"file_name": "$filename", "parent": "$parentId"}"""
+        val metaJson = kotlinx.serialization.json.buildJsonObject {
+            put("file_name", kotlinx.serialization.json.JsonPrimitive(filename))
+            put("parent", kotlinx.serialization.json.JsonPrimitive(parentId))
+        }.toString()
         val metaB64 = Base64.getEncoder().encodeToString(metaJson.toByteArray(Charsets.UTF_8))
         val contentType = if (fileType.equals("epub", ignoreCase = true)) {
             "application/epub+zip"

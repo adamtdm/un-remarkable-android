@@ -7,9 +7,10 @@ object RmSvgRenderer {
     fun renderToSvg(page: Page, darkMode: Boolean = false): String {
         val sb = StringBuilder()
         val bgFill = if (darkMode) "#18181b" else "#ffffff"
+        val minX = if (page.centerOriginX) -(page.width / 2) else 0
 
-        sb.append("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}" width="100%" height="100%">""").append("\n")
-        sb.append("""  <rect width="100%" height="100%" fill="$bgFill" />""").append("\n")
+        sb.append("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="$minX 0 ${page.width} ${page.height}" width="100%" height="100%">""").append("\n")
+        sb.append("""  <rect x="$minX" y="0" width="${page.width}" height="${page.height}" fill="$bgFill" />""").append("\n")
 
         for ((lIndex, layer) in page.layers.withIndex()) {
             sb.append("""  <g id="layer_${lIndex}_${layer.name.filter { it.isLetterOrDigit() }}">""").append("\n")
@@ -17,7 +18,7 @@ object RmSvgRenderer {
             for (stroke in layer.strokes) {
                 if (stroke.points.isEmpty() || stroke.tool == ToolType.ERASER) continue
 
-                val colorRgba = RmPalette.getColor(stroke.color.value, darkMode)
+                val colorRgba = RmPalette.getColor(stroke.color.value, darkMode, stroke.explicitColor)
                 val avgPressure = stroke.points.map { it.pressure }.average().toFloat()
                 val style = WritingTools.computeStyle(stroke.tool, stroke.thicknessScale, avgPressure)
 

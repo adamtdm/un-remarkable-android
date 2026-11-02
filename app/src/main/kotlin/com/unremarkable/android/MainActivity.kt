@@ -6,13 +6,16 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
+import com.unremarkable.android.render.AndroidDocumentOptimizer
 import com.unremarkable.android.storage.AndroidTokenStorage
 import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.storage.AppSettings
@@ -30,12 +33,13 @@ import com.unremarkable.core.cloud.FileBlobStore
 import com.unremarkable.core.cloud.RMCloudClient
 import com.unremarkable.core.cloud.SyncEngine
 import com.unremarkable.core.cloud.SyncResult
-import com.unremarkable.core.converter.ComicConverterEngine
 import com.unremarkable.core.model.DocumentItem
+import com.unremarkable.core.model.PageRef
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -48,12 +52,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var annotationStore: AnnotationStore
     private lateinit var cloudClient: RMCloudClient
     private lateinit var syncEngine: SyncEngine
-    private val converterEngine = ComicConverterEngine()
+
+    private var pendingShareIntent by mutableStateOf<Intent?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize persistent architecture components
         tokenStorage = AndroidTokenStorage(applicationContext)
         authManager = AuthManager(storage = tokenStorage)
         appSettings = AppSettings(applicationContext)
@@ -63,10 +67,14 @@ class MainActivity : ComponentActivity() {
         cloudClient = RMCloudClient(auth = authManager)
         syncEngine = SyncEngine(client = cloudClient, blobStore = blobStore, repository = repository)
 
-        // Reset root generation if existing documents were parsed with previous buggy parser (missing subfiles or Untitled)
+        // Force fresh index pull only if cloud documents were cached by an older schema without subfile maps
         val existingDocs = repository.getAllDocuments()
-        if (existingDocs.isNotEmpty() && existingDocs.any { it.subfiles.isEmpty() || it.visibleName == "Untitled" }) {
+        if (existingDocs.any { !it.isFolder && !it.localOnly && it.subfiles.isEmpty() }) {
             repository.saveRoot("", 0L)
+        }
+
+        if (savedInstanceState == null) {
+            pendingShareIntent = intent
         }
 
         setContent {
@@ -82,58 +90,98 @@ class MainActivity : ComponentActivity() {
                 var selectedDocument by remember { mutableStateOf<DocumentItem?>(null) }
                 var currentFolderId by remember { mutableStateOf("") }
                 var isSyncing by remember { mutableStateOf(false) }
+                var syncStatusMessage by remember { mutableStateOf("") }
                 var syncGeneration by remember { mutableLongStateOf(repository.getLocalGeneration()) }
 
                 var showSettings by remember { mutableStateOf(false) }
-                var showOnboarding by remember { mutableStateOf(!authManager.isAuthenticated && repository.getAllDocuments().isEmpty()) }
+                var showOnboarding by remember {
+                    mutableStateOf(!authManager.isAuthenticated && repository.getAllDocuments().isEmpty())
+                }
                 var isPairing by remember { mutableStateOf(false) }
                 var pairingError by remember { mutableStateOf<String?>(null) }
 
                 var showQuickCapture by remember { mutableStateOf(false) }
                 var showMeetingRecorder by remember { mutableStateOf(false) }
                 var showConverterSheet by remember { mutableStateOf(false) }
-                var converterFileName by remember { mutableStateOf("Shared Document.cbz") }
+                var converterFileName by remember { mutableStateOf("") }
+                var converterUri by remember { mutableStateOf<Uri?>(null) }
+                var converterSourceFile by remember { mutableStateOf<File?>(null) }
                 var isConverting by remember { mutableStateOf(false) }
                 var conversionProgress by remember { mutableStateOf("") }
 
-                // Sync function
-                val runSync = {
-                    if (!isSyncing) {
-                        if (!authManager.isAuthenticated) {
-                            Toast.makeText(this@MainActivity, "Connect your reMarkable account in Settings to sync", Toast.LENGTH_SHORT).show()
-                        } else {
-                            lifecycleScope.launch {
-                                isSyncing = true
-                                val result = syncEngine.sync()
-                                isSyncing = false
-                                when (result) {
-                                    is SyncResult.Success -> {
-                                        documents = repository.getAllDocuments()
-                                        syncGeneration = repository.getLocalGeneration()
-                                        Toast.makeText(this@MainActivity, "Synced ${result.syncedDocs} documents", Toast.LENGTH_SHORT).show()
-                                    }
-                                    is SyncResult.UpToDate -> {
-                                        Toast.makeText(this@MainActivity, "Library is up to date", Toast.LENGTH_SHORT).show()
-                                    }
-                                    is SyncResult.Error -> {
-                                        Toast.makeText(this@MainActivity, "Sync: ${result.message}", Toast.LENGTH_LONG).show()
-                                    }
+                val documentPickerLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    if (uri != null) {
+                        converterSourceFile = null
+                        converterUri = uri
+                        converterFileName = queryFileName(uri) ?: "Selected Document.pdf"
+                        showConverterSheet = true
+                    }
+                }
+
+                fun runSync(silentIfUnauthenticated: Boolean = false) {
+                    if (isSyncing) return
+                    if (!authManager.isAuthenticated) {
+                        if (!silentIfUnauthenticated) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Connect your reMarkable account in Settings to sync",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        return
+                    }
+                    lifecycleScope.launch {
+                        isSyncing = true
+                        syncStatusMessage = "Connecting to reMarkable Cloud..."
+                        val result = syncEngine.sync { progress ->
+                            syncStatusMessage = progress.message
+                        }
+                        isSyncing = false
+                        syncStatusMessage = ""
+                        when (result) {
+                            is SyncResult.Success -> {
+                                val updated = repository.getAllDocuments()
+                                documents = updated
+                                syncGeneration = repository.getLocalGeneration()
+                                selectedDocument?.let { openDoc ->
+                                    selectedDocument = updated.find { it.id == openDoc.id }
+                                        ?: updated.find { !it.isFolder && it.visibleName == openDoc.visibleName }
                                 }
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Synced ${result.syncedDocs} documents",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                            is SyncResult.UpToDate -> {
+                                documents = repository.getAllDocuments()
+                                syncGeneration = repository.getLocalGeneration()
+                                if (!silentIfUnauthenticated) {
+                                    Toast.makeText(this@MainActivity, "Library is up to date", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                            is SyncResult.Error -> {
+                                documents = repository.getAllDocuments()
+                                Toast.makeText(this@MainActivity, "Sync: ${result.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     }
                 }
 
-                // Auto-sync on startup if enabled and authenticated
                 LaunchedEffect(Unit) {
                     if (authManager.isAuthenticated && appSettings.autoSyncOnStart) {
-                        runSync()
+                        runSync(silentIfUnauthenticated = true)
                     }
                 }
 
-                // Check for incoming Share Sheet Intent (e.g. user selected "Share -> Un-remarkable")
-                LaunchedEffect(intent) {
-                    handleIncomingShareIntent(intent) { _, name ->
+                LaunchedEffect(pendingShareIntent) {
+                    val incoming = pendingShareIntent ?: return@LaunchedEffect
+                    pendingShareIntent = null
+                    handleIncomingShareIntent(incoming) { uri, name ->
+                        converterSourceFile = null
+                        converterUri = uri
                         converterFileName = name
                         showConverterSheet = true
                     }
@@ -152,29 +200,31 @@ class MainActivity : ComponentActivity() {
                                         val res = authManager.registerDevice(code)
                                         isPairing = false
                                         if (res.isSuccess) {
-                                            Toast.makeText(this@MainActivity, "reMarkable Connected Successfully!", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(
+                                                this@MainActivity,
+                                                "reMarkable Connected Successfully!",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
                                             showOnboarding = false
                                             runSync()
                                         } else {
                                             val error = res.exceptionOrNull()
                                             pairingError = when {
                                                 error is java.net.SocketTimeoutException ||
-                                                error?.message?.contains("timeout", ignoreCase = true) == true ->
-                                                    "Connection timed out. reMarkable cloud servers took too long to respond. Please check your network and try again."
+                                                    error?.message?.contains("timeout", ignoreCase = true) == true ->
+                                                    "Connection timed out. Please check your network and try again."
                                                 error is java.net.UnknownHostException ->
-                                                    "Cannot reach reMarkable cloud. Please verify your device has an active internet connection."
+                                                    "Cannot reach reMarkable cloud. Verify your internet connection."
                                                 error?.message?.contains("Invalid", ignoreCase = true) == true ||
-                                                error?.message?.contains("400") == true ->
-                                                    "Invalid or expired one-time code. Please generate a fresh code at my.remarkable.com and enter it."
+                                                    error?.message?.contains("400") == true ->
+                                                    "Invalid or expired one-time code. Generate a fresh code at my.remarkable.com."
                                                 else ->
                                                     error?.message ?: "Pairing failed. Please check the code and try again."
                                             }
                                         }
                                     }
                                 },
-                                onSkip = {
-                                    showOnboarding = false
-                                }
+                                onSkip = { showOnboarding = false }
                             )
                         }
                         showSettings -> {
@@ -200,10 +250,16 @@ class MainActivity : ComponentActivity() {
                                     annotationStore.clearAll()
                                     documents = emptyList()
                                     selectedDocument = null
-                                    Toast.makeText(this@MainActivity, "Device unpaired and cache cleared", Toast.LENGTH_SHORT).show()
+                                    syncGeneration = 0L
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Device unpaired and cache cleared",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 },
                                 onForceResync = {
                                     repository.saveRoot("", 0L)
+                                    showSettings = false
                                     runSync()
                                 },
                                 onClearCache = {
@@ -216,17 +272,26 @@ class MainActivity : ComponentActivity() {
                             AdaptiveScaffold(
                                 documents = documents,
                                 isSyncing = isSyncing,
+                                syncStatusMessage = syncStatusMessage,
                                 syncGeneration = syncGeneration,
                                 currentFolderId = currentFolderId,
                                 onOpenFolder = { currentFolderId = it },
                                 onSyncNow = { runSync() },
                                 onQuickCapture = { showQuickCapture = true },
                                 onOpenConverter = {
-                                    converterFileName = "Notebook_Export.cbz"
+                                    converterUri = null
+                                    converterSourceFile = null
+                                    converterFileName = ""
                                     showConverterSheet = true
                                 },
                                 onOpenSettings = { showSettings = true },
                                 onOpenMeetingRecorder = { showMeetingRecorder = true },
+                                onOptimizeCurrentPdf = { file, name ->
+                                    converterUri = null
+                                    converterSourceFile = file
+                                    converterFileName = name
+                                    showConverterSheet = true
+                                },
                                 selectedDocument = selectedDocument,
                                 onSelectDocument = { selectedDocument = it },
                                 blobStore = blobStore,
@@ -236,34 +301,51 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Quick Capture Bottom Sheet / Dialog
                     if (showQuickCapture) {
                         QuickCaptureDialog(
                             onDismiss = { showQuickCapture = false },
                             onCapture = { text, isTask ->
-                                val docTitle = if (isTask) "[\u2713] $text" else text
-                                val newDoc = DocumentItem(
-                                    id = UUID.randomUUID().toString(),
-                                    visibleName = docTitle,
-                                    parent = currentFolderId,
-                                    isFolder = false,
-                                    pageCount = 1,
-                                    pinned = isTask,
-                                    lastModified = System.currentTimeMillis(),
-                                    tags = if (isTask) listOf("Task") else listOf("Note")
-                                )
-                                repository.upsertDocument(newDoc)
-                                documents = repository.getAllDocuments()
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    if (isTask) "Added to Tasks notebook" else "Added to Quick Notes",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                lifecycleScope.launch {
+                                    val now = System.currentTimeMillis()
+                                    val pdfBytes = withContext(Dispatchers.Default) {
+                                        AndroidDocumentOptimizer.generateQuickCapturePdf(text, isTask, now)
+                                    }
+                                    val pdfHash = sha256Hex(pdfBytes)
+                                    withContext(Dispatchers.IO) {
+                                        blobStore.putBlob(pdfHash, pdfBytes)
+                                    }
+                                    val firstLine = text.lineSequence().firstOrNull()?.trim().orEmpty().take(48)
+                                    val docTitle = (if (isTask) "[Task] $firstLine" else firstLine).ifBlank { "Quick Note" }
+                                    val docId = UUID.randomUUID().toString()
+                                    val newDoc = DocumentItem(
+                                        id = docId,
+                                        visibleName = docTitle,
+                                        parent = currentFolderId,
+                                        isFolder = false,
+                                        fileType = "pdf",
+                                        pageCount = 1,
+                                        pages = listOf(PageRef("page-0", 0)),
+                                        pinned = isTask,
+                                        lastModified = now,
+                                        hash = pdfHash,
+                                        subfiles = mapOf("$docId.pdf" to pdfHash),
+                                        tags = if (isTask) listOf("Task") else listOf("Note"),
+                                        localOnly = true
+                                    )
+                                    repository.upsertDocument(newDoc)
+                                    documents = repository.getAllDocuments()
+                                    selectedDocument = newDoc
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        if (authManager.isAuthenticated) "Saved & syncing to reMarkable..." else "Saved to library",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    runSync(silentIfUnauthenticated = true)
+                                }
                             }
                         )
                     }
 
-                    // Meeting Recorder & Live Transcription Dialog
                     if (showMeetingRecorder) {
                         MeetingRecorderDialog(
                             repository = repository,
@@ -271,48 +353,98 @@ class MainActivity : ComponentActivity() {
                             onNotebookCreated = { notebook ->
                                 documents = repository.getAllDocuments()
                                 selectedDocument = notebook
+                                runSync(silentIfUnauthenticated = true)
                             },
                             onDismiss = { showMeetingRecorder = false }
                         )
                     }
 
-                    // On-Device Comic & Document Converter Sheet
                     if (showConverterSheet) {
+                        val hasSource = converterUri != null || converterSourceFile != null
                         ConverterSheet(
                             fileName = converterFileName,
+                            hasInputSource = hasSource,
+                            defaultProfile = appSettings.defaultDeviceProfile,
                             isConverting = isConverting,
                             progressMessage = conversionProgress,
-                            onDismiss = { showConverterSheet = false },
+                            onPickFile = {
+                                documentPickerLauncher.launch(
+                                    arrayOf(
+                                        "application/pdf",
+                                        "application/vnd.comicbook+zip",
+                                        "application/x-cbz",
+                                        "application/zip",
+                                        "image/*"
+                                    )
+                                )
+                            },
+                            onDismiss = { if (!isConverting) showConverterSheet = false },
                             onStartConversion = { config ->
+                                val srcFile = converterSourceFile
+                                val srcUri = converterUri
+                                if (srcFile == null && srcUri == null) return@ConverterSheet
                                 lifecycleScope.launch {
                                     isConverting = true
-                                    conversionProgress = "Optimizing pages to ${config.targetProfile.displayName}..."
-                                    kotlinx.coroutines.delay(800)
-                                    conversionProgress = "Applying 5-stop quality preset..."
-                                    kotlinx.coroutines.delay(600)
-                                    conversionProgress = "Splitting two-page spreads into portrait..."
-                                    kotlinx.coroutines.delay(600)
-
-                                    val convertedDoc = DocumentItem(
-                                        id = UUID.randomUUID().toString(),
-                                        visibleName = converterFileName.substringBeforeLast('.') + " (Optimized).pdf",
-                                        parent = currentFolderId,
-                                        isFolder = false,
-                                        pageCount = 24,
-                                        pinned = false,
-                                        lastModified = System.currentTimeMillis(),
-                                        tags = listOf("Optimized", config.targetProfile.id)
-                                    )
-                                    repository.upsertDocument(convertedDoc)
-                                    documents = repository.getAllDocuments()
-
-                                    isConverting = false
-                                    showConverterSheet = false
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Document optimized for ${config.targetProfile.displayName}",
-                                        Toast.LENGTH_LONG
-                                    ).show()
+                                    conversionProgress = "Preparing document..."
+                                    try {
+                                        val result = if (srcFile != null) {
+                                            AndroidDocumentOptimizer.optimizeFile(
+                                                inputFile = srcFile,
+                                                fileName = converterFileName,
+                                                config = config,
+                                                onProgress = { p -> conversionProgress = p.message }
+                                            )
+                                        } else {
+                                            AndroidDocumentOptimizer.optimizeUri(
+                                                context = this@MainActivity,
+                                                uri = srcUri!!,
+                                                fileName = converterFileName,
+                                                config = config,
+                                                onProgress = { p -> conversionProgress = p.message }
+                                            )
+                                        }
+                                        val pdfHash = sha256Hex(result.pdfBytes)
+                                        withContext(Dispatchers.IO) {
+                                            blobStore.putBlob(pdfHash, result.pdfBytes)
+                                        }
+                                        val baseName = converterFileName
+                                            .substringBeforeLast('.')
+                                            .ifBlank { "Document" }
+                                        val docId = UUID.randomUUID().toString()
+                                        val convertedDoc = DocumentItem(
+                                            id = docId,
+                                            visibleName = "$baseName (${config.targetProfile.id.uppercase()})",
+                                            parent = currentFolderId,
+                                            isFolder = false,
+                                            fileType = "pdf",
+                                            pageCount = result.pageCount,
+                                            pages = (0 until result.pageCount).map { PageRef("page-$it", it) },
+                                            pinned = false,
+                                            lastModified = System.currentTimeMillis(),
+                                            hash = pdfHash,
+                                            subfiles = mapOf("$docId.pdf" to pdfHash),
+                                            tags = listOf("Optimized", config.targetProfile.id),
+                                            localOnly = true
+                                        )
+                                        repository.upsertDocument(convertedDoc)
+                                        documents = repository.getAllDocuments()
+                                        selectedDocument = convertedDoc
+                                        isConverting = false
+                                        showConverterSheet = false
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Optimized ${result.pageCount} pages for ${config.targetProfile.displayName}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        runSync(silentIfUnauthenticated = true)
+                                    } catch (e: Exception) {
+                                        isConverting = false
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "Optimization failed: ${e.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
                                 }
                             }
                         )
@@ -322,39 +454,44 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingShareIntent = intent
+    }
+
+    @Suppress("DEPRECATION")
     private fun handleIncomingShareIntent(
         intent: Intent?,
         onFileReceived: (Uri, String) -> Unit
     ) {
         if (intent == null) return
-        val action = intent.action
-        val type = intent.type
-
-        if (Intent.ACTION_SEND == action && type != null) {
-            val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: intent.data
-            if (uri != null) {
-                val fileName = queryFileName(uri) ?: "Shared Document"
-                onFileReceived(uri, fileName)
-            }
+        val uri: Uri? = when (intent.action) {
+            Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: intent.data
+            Intent.ACTION_SEND_MULTIPLE -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
+            else -> null
+        }
+        if (uri != null) {
+            val fileName = queryFileName(uri) ?: "Shared Document.pdf"
+            onFileReceived(uri, fileName)
         }
     }
 
     private fun queryFileName(uri: Uri): String? {
         var name: String? = null
         if (uri.scheme == "content") {
-            val cursor = contentResolver.query(uri, null, null, null, null)
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val index = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (index >= 0) {
-                        name = it.getString(index)
-                    }
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) name = cursor.getString(index)
                 }
             }
         }
-        if (name == null) {
-            name = uri.path?.substringAfterLast('/')
-        }
-        return name
+        return name ?: uri.path?.substringAfterLast('/')
     }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
 }

@@ -24,6 +24,7 @@ import com.unremarkable.android.ui.screens.ReaderScreen
 import com.unremarkable.core.cloud.BlobStore
 import com.unremarkable.core.cloud.RMCloudClient
 import com.unremarkable.core.model.DocumentItem
+import java.io.File
 
 const val FOLDABLE_BREAKPOINT_DP = 600
 
@@ -37,6 +38,7 @@ enum class SidebarMode {
 fun AdaptiveScaffold(
     documents: List<DocumentItem>,
     isSyncing: Boolean,
+    syncStatusMessage: String = "",
     syncGeneration: Long,
     currentFolderId: String,
     onOpenFolder: (String) -> Unit,
@@ -45,6 +47,7 @@ fun AdaptiveScaffold(
     onOpenConverter: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMeetingRecorder: () -> Unit = {},
+    onOptimizeCurrentPdf: ((File, String) -> Unit)? = null,
     selectedDocument: DocumentItem?,
     onSelectDocument: (DocumentItem?) -> Unit,
     blobStore: BlobStore? = null,
@@ -83,8 +86,10 @@ fun AdaptiveScaffold(
                         LibraryScreen(
                             documents = documents,
                             isSyncing = isSyncing,
+                            syncStatusMessage = syncStatusMessage,
                             syncGeneration = syncGeneration,
                             currentFolderId = currentFolderId,
+                            blobStore = blobStore,
                             onOpenDocument = onSelectDocument,
                             onOpenFolder = onOpenFolder,
                             onSyncNow = onSyncNow,
@@ -191,6 +196,7 @@ fun AdaptiveScaffold(
                         },
                         onSelectDocument = onSelectDocument,
                         onOpenMeetingRecorder = onOpenMeetingRecorder,
+                        onOptimizeCurrentPdf = onOptimizeCurrentPdf,
                         onBack = { onSelectDocument(null) }
                     )
                 } else {
@@ -295,6 +301,7 @@ fun AdaptiveScaffold(
                 isFullscreen = false,
                 onSelectDocument = onSelectDocument,
                 onOpenMeetingRecorder = onOpenMeetingRecorder,
+                onOptimizeCurrentPdf = onOptimizeCurrentPdf,
                 onBack = { onSelectDocument(null) },
                 modifier = modifier
             )
@@ -302,8 +309,10 @@ fun AdaptiveScaffold(
             LibraryScreen(
                 documents = documents,
                 isSyncing = isSyncing,
+                syncStatusMessage = syncStatusMessage,
                 syncGeneration = syncGeneration,
                 currentFolderId = currentFolderId,
+                blobStore = blobStore,
                 onOpenDocument = onSelectDocument,
                 onOpenFolder = onOpenFolder,
                 onSyncNow = onSyncNow,

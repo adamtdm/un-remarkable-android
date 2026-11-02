@@ -323,12 +323,17 @@ private fun generateFullResolutionSplash(
 }
 
 private fun saveSplashToFile(context: Context, bitmap: Bitmap): File {
-    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-    val targetDir = if (downloadsDir != null && downloadsDir.exists()) downloadsDir else context.filesDir
+    val targetDir = File(context.cacheDir, "exports").apply { mkdirs() }
     val file = File(targetDir, "suspended.png")
     FileOutputStream(file).use { out ->
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
     }
+    com.unremarkable.android.render.DocumentExporter.saveCopyToPublicDownloads(
+        context,
+        file,
+        "suspended.png",
+        "image/png"
+    )
     return file
 }
 
