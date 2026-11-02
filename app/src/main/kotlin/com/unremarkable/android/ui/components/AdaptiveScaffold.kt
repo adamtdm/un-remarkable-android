@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuOpen
+import androidx.compose.material.icons.automirrored.filled.ViewSidebar
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -103,18 +105,18 @@ fun AdaptiveScaffold(
                     } else if (sidebarMode == SidebarMode.MINIMIZED_RAIL) {
                         // Minimized Icon-Only Navigation Rail
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxSize()
                         ) {
                             NavigationRail(
                                 modifier = Modifier.fillMaxHeight(),
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                containerColor = MaterialTheme.colorScheme.surface,
                                 header = {
                                     IconButton(
                                         onClick = { sidebarMode = SidebarMode.EXPANDED },
                                         modifier = Modifier.padding(top = 8.dp)
                                     ) {
-                                        Icon(Icons.Default.MenuOpen, contentDescription = "Expand Sidebar")
+                                        Icon(Icons.AutoMirrored.Filled.MenuOpen, contentDescription = "Expand Sidebar")
                                     }
                                 }
                             ) {
@@ -201,60 +203,86 @@ fun AdaptiveScaffold(
                     )
                 } else {
                     Box(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background),
                         contentAlignment = Alignment.Center
                     ) {
                         Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(14.dp),
                             border = androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                                MaterialTheme.colorScheme.outline
                             ),
                             modifier = Modifier
-                                .padding(40.dp)
-                                .widthIn(max = 440.dp)
+                                .padding(24.dp)
+                                .widthIn(max = 380.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(36.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(28.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
                                 Surface(
-                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
                                     shape = CircleShape,
-                                    modifier = Modifier.size(64.dp)
+                                    modifier = Modifier.size(56.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
                                             imageVector = Icons.Default.AutoStories,
                                             contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(32.dp)
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(28.dp)
                                         )
                                     }
                                 }
                                 Text(
                                     text = "Ready to Read & Write",
                                     style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    softWrap = false
                                 )
                                 Text(
-                                    text = "Foldable dual-pane active. Select any notebook from the left pane, or collapse the menu to single-column rail.",
+                                    text = "Foldable dual-pane active. Select any document from the left pane, or collapse the menu to a single-column rail.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                    OutlinedButton(onClick = { sidebarMode = SidebarMode.MINIMIZED_RAIL }) {
-                                        Icon(Icons.Default.ViewSidebar, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Minimize to Rail")
-                                    }
-                                    Button(onClick = onQuickCapture) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Button(
+                                        onClick = onQuickCapture,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    ) {
                                         Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Quick Capture")
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("New Note (Quick Capture)", maxLines = 1, softWrap = false)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { sidebarMode = SidebarMode.MINIMIZED_RAIL },
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth(),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.ViewSidebar, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Collapse to Rail", maxLines = 1, softWrap = false)
                                     }
                                 }
                             }

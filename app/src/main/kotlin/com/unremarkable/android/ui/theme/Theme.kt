@@ -7,45 +7,78 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-val Zinc950 = Color(0xFF09090B)
-val Zinc900 = Color(0xFF18181B)
-val Zinc800 = Color(0xFF27272A)
-val Zinc700 = Color(0xFF3F3F46)
-val Zinc400 = Color(0xFFA1A1AA)
-val Zinc200 = Color(0xFFE4E4E7)
-val Zinc100 = Color(0xFFF4F4F5)
-val Amber500 = Color(0xFFF59E0B)
+// Light Theme: Tactile Warm Paper & Charcoal Ink (matching container app style.css [data-theme="light"])
+val PaperBgPrimary = Color(0xFFF6F5F1)       // var(--bg-primary): Warm Tactile Paper
+val PaperBgSecondary = Color(0xFFFFFFFF)     // var(--bg-secondary): Pure Card Surface
+val PaperBgTertiary = Color(0xFFECEAE3)      // var(--bg-tertiary): Input / Chip Background
+val PaperBorder = Color(0xFFDFDDD4)          // var(--border-color)
+val PaperBorderStrong = Color(0xFFCAC7BC)    // var(--border-strong)
+val CharcoalTextPrimary = Color(0xFF181816)  // var(--text-primary): Deep Charcoal Ink
+val CharcoalTextSecondary = Color(0xFF585750)// var(--text-secondary)
+val CharcoalTextMuted = Color(0xFF8C8A81)    // var(--text-muted)
+
+// Dark Theme: Nordic Basalt & E-Ink Chalk (matching container app style.css :root dark)
+val BasaltBgPrimary = Color(0xFF121211)      // var(--bg-primary): Deep Basalt
+val BasaltBgSecondary = Color(0xFF1A1A18)    // var(--bg-secondary): Surface Card
+val BasaltBgTertiary = Color(0xFF242422)     // var(--bg-tertiary): Input / Chip Background
+val BasaltBorder = Color(0xFF2B2B28)         // var(--border-color)
+val BasaltBorderStrong = Color(0xFF3F3E3A)   // var(--border-strong)
+val ChalkTextPrimary = Color(0xFFF5F4EF)     // var(--text-primary): E-Ink Chalk Text
+val ChalkTextSecondary = Color(0xFFB5B4AC)   // var(--text-secondary)
+val ChalkTextMuted = Color(0xFF949289)       // var(--text-muted)
+
+// Status & Accent Tokens from container app
+val StatusSuccess = Color(0xFF34D399)        // var(--success)
+val StatusWarning = Color(0xFFFBBF24)        // var(--warning)
+val StatusDanger = Color(0xFFF87171)         // var(--danger)
+val StatusDangerLight = Color(0xFFDC2626)
+
+// Backwards-compatible aliases for ReaderScreen HUD
+val Zinc950 = BasaltBgPrimary
+val Zinc900 = BasaltBgSecondary
+val Zinc800 = BasaltBgTertiary
+val Zinc700 = BasaltBorderStrong
+val Zinc400 = ChalkTextSecondary
+val Zinc200 = PaperBorder
+val Zinc100 = PaperBgTertiary
+val Amber500 = StatusWarning
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Zinc100,
-    onPrimary = Zinc900,
-    primaryContainer = Zinc800,
-    onPrimaryContainer = Zinc100,
-    surface = Zinc900,
-    onSurface = Zinc100,
-    surfaceVariant = Zinc800,
-    onSurfaceVariant = Zinc400,
-    background = Zinc950,
-    onBackground = Zinc100,
-    outline = Zinc700,
-    secondary = Amber500,
-    onSecondary = Zinc950
+    primary = ChalkTextPrimary,
+    onPrimary = BasaltBgPrimary,
+    primaryContainer = BasaltBgTertiary,
+    onPrimaryContainer = ChalkTextPrimary,
+    surface = BasaltBgSecondary,
+    onSurface = ChalkTextPrimary,
+    surfaceVariant = BasaltBgTertiary,
+    onSurfaceVariant = ChalkTextSecondary,
+    background = BasaltBgPrimary,
+    onBackground = ChalkTextPrimary,
+    outline = BasaltBorder,
+    outlineVariant = BasaltBorderStrong,
+    secondary = ChalkTextPrimary,
+    onSecondary = BasaltBgPrimary,
+    tertiary = StatusWarning,
+    onTertiary = BasaltBgPrimary
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Zinc900,
-    onPrimary = Color.White,
-    primaryContainer = Zinc200,
-    onPrimaryContainer = Zinc900,
-    surface = Color.White,
-    onSurface = Zinc900,
-    surfaceVariant = Zinc100,
-    onSurfaceVariant = Zinc700,
-    background = Color(0xFFFAFAFA),
-    onBackground = Zinc900,
-    outline = Zinc200,
-    secondary = Amber500,
-    onSecondary = Color.White
+    primary = CharcoalTextPrimary,
+    onPrimary = PaperBgSecondary,
+    primaryContainer = PaperBgTertiary,
+    onPrimaryContainer = CharcoalTextPrimary,
+    surface = PaperBgSecondary,
+    onSurface = CharcoalTextPrimary,
+    surfaceVariant = PaperBgTertiary,
+    onSurfaceVariant = CharcoalTextSecondary,
+    background = PaperBgPrimary,
+    onBackground = CharcoalTextPrimary,
+    outline = PaperBorder,
+    outlineVariant = PaperBorderStrong,
+    secondary = CharcoalTextPrimary,
+    onSecondary = PaperBgSecondary,
+    tertiary = StatusWarning,
+    onTertiary = PaperBgPrimary
 )
 
 @Composable

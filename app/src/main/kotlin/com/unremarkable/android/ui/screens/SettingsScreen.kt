@@ -12,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.unremarkable.android.storage.AppSettings
 import com.unremarkable.android.storage.ThemeMode
@@ -62,10 +63,11 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
             // 1. Account Section
-            Text("reMarkable Account", style = MaterialTheme.typography.titleMedium)
+            Text("reMarkable Account", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -112,10 +114,11 @@ fun SettingsScreen(
             }
 
             // 2. Appearance Section
-            Text("Appearance & Theme", style = MaterialTheme.typography.titleMedium)
+            Text("Appearance & Theme", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -140,7 +143,7 @@ fun SettingsScreen(
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3)
                         ) {
-                            Text("Dark (OKLCH)")
+                            Text("Basalt Dark")
                         }
                         SegmentedButton(
                             selected = currentTheme == ThemeMode.LIGHT,
@@ -151,17 +154,18 @@ fun SettingsScreen(
                             },
                             shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3)
                         ) {
-                            Text("Paper Light")
+                            Text("Warm Paper")
                         }
                     }
                 }
             }
 
             // 3. Default Hardware Target Profile
-            Text("Default Device Profile", style = MaterialTheme.typography.titleMedium)
+            Text("Default Device Profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -195,10 +199,11 @@ fun SettingsScreen(
             }
 
             // 4. Synchronization & Cache
-            Text("Sync & Storage Cache", style = MaterialTheme.typography.titleMedium)
+            Text("Sync & Storage Cache", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
