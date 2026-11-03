@@ -1,6 +1,8 @@
 package com.unremarkable.android.ui.components
 
 import android.graphics.Bitmap
+import android.util.Log
+import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,10 +27,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.unremarkable.android.render.DocumentExporter
 import com.unremarkable.android.render.PdfDocumentRenderer
+import com.unremarkable.android.render.RmPageCanvasRenderer
 import com.unremarkable.android.storage.AnnotationStore
-import com.unremarkable.android.ui.theme.Zinc800
 import com.unremarkable.android.ui.theme.Zinc900
+import com.unremarkable.core.cloud.BlobStore
+import com.unremarkable.core.model.DocumentItem
+import com.unremarkable.core.render.RmBinaryParser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 enum class ThumbnailFilter {
     ALL,
@@ -38,21 +46,35 @@ enum class ThumbnailFilter {
 
 @Composable
 fun PageThumbnailGridDialog(
-    document: com.unremarkable.core.model.DocumentItem,
+    document: DocumentItem,
     totalPages: Int,
     currentPage: Int,
     pdfRenderer: PdfDocumentRenderer?,
-    blobStore: com.unremarkable.core.cloud.BlobStore? = null,
+    epubPages: List<List<String>> = emptyList(),
+    blobStore: BlobStore? = null,
     annotationStore: AnnotationStore?,
     onSelectPage: (Int) -> Unit,
     onDismiss: () -> Unit
 ) {
     val docId = document.id
     var selectedFilter by remember { mutableStateOf(ThumbnailFilter.ALL) }
-    val bookmarkedPages = remember(docId) { annotationStore?.getBookmarks(docId).orEmpty() }
-    val annotatedPages = remember(docId) { annotationStore?.getAnnotatedPages(docId).orEmpty() }
+    val bookmarkedPages = remember(docId) {
+        try {
+            annotationStore?.getBookmarks(docId).orEmpty()
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
+    val annotatedPages = remember(docId) {
+        try {
+            annotationStore?.getAnnotatedPages(docId).orEmpty()
+        } catch (_: Exception) {
+            emptySet()
+        }
+    }
 
-    val allPageNumbers = remember(totalPages) { (1..totalPages).toList() }
+    val total = totalPages.coerceAtLeast(1)
+    val allPageNumbers = remember(total) { (1..total).toList() }
     val filteredPages = remember(selectedFilter, bookmarkedPages, annotatedPages, allPageNumbers) {
         when (selectedFilter) {
             ThumbnailFilter.ALL -> allPageNumbers
@@ -60,6 +82,9 @@ fun PageThumbnailGridDialog(
             ThumbnailFilter.ANNOTATED -> allPageNumbers.filter { it in annotatedPages }
         }
     }
+
+    // In-memory cache for notebook and EPUB thumbnails scoped to dialog lifetime
+    val notebookThumbnailCache = remember(docId) { LruCache<Int, Bitmap>(64) }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -159,20 +184,36 @@ fun PageThumbnailGridDialog(
                             val isBookmarked = pageNum in bookmarkedPages
                             val isAnnotated = pageNum in annotatedPages
 
-                            // Async thumbnail loading for both PDFs and .rm notebooks
+                            // Async thumbnail loading for PDFs, EPUBs, and .rm notebooks
                             val thumbnailBitmap by produceState<Bitmap?>(initialValue = null, pageNum, pdfRenderer, document.id) {
-                                value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                                    val pageIdx = pageNum - 1
-                                    val pdfIdx = com.unremarkable.android.render.DocumentExporter.resolvePdfPageIndex(document, pageIdx)
-                                    if (pdfRenderer != null && pdfIdx in 0 until pdfRenderer.pageCount) {
-                                        pdfRenderer.renderThumbnail(pdfIdx, 180, 240)
-                                    } else if (blobStore != null) {
-                                        val rmHash = com.unremarkable.android.render.DocumentExporter.resolveRmBlobHash(document, pageIdx)
-                                        val rmPage = rmHash?.let { blobStore.getBlob(it) }?.let { com.unremarkable.core.render.RmBinaryParser.parse(it) }
-                                        if (rmPage != null) {
-                                            com.unremarkable.android.render.RmPageCanvasRenderer.renderNotebookPage(rmPage, false, 240, 320)
+                                value = withContext(Dispatchers.Default) {
+                                    try {
+                                        val pageIdx = pageNum - 1
+                                        val pdfIdx = DocumentExporter.resolvePdfPageIndex(document, pageIdx)
+                                        if (pdfRenderer != null && pdfIdx in 0 until pdfRenderer.pageCount) {
+                                            pdfRenderer.renderThumbnail(pdfIdx, 180, 240)
+                                        } else if (epubPages.isNotEmpty()) {
+                                            notebookThumbnailCache.get(pageNum)?.let { if (!it.isRecycled) return@withContext it }
+                                            val lines = epubPages.getOrElse(pageIdx.coerceIn(0, epubPages.lastIndex)) { emptyList() }
+                                            val fullBmp = RmPageCanvasRenderer.renderEpubTextPage(lines, pageNum, total, darkMode = false)
+                                            val thumbBmp = Bitmap.createScaledBitmap(fullBmp, 180, 240, true)
+                                            if (fullBmp !== thumbBmp) fullBmp.recycle()
+                                            notebookThumbnailCache.put(pageNum, thumbBmp)
+                                            thumbBmp
+                                        } else if (blobStore != null) {
+                                            notebookThumbnailCache.get(pageNum)?.let { if (!it.isRecycled) return@withContext it }
+                                            val rmHash = DocumentExporter.resolveRmBlobHash(document, pageIdx)
+                                            val rmPage = rmHash?.let { blobStore.getBlob(it) }?.let { RmBinaryParser.parse(it) }
+                                            if (rmPage != null) {
+                                                val bmp = RmPageCanvasRenderer.renderNotebookPage(rmPage, false, 240, 320)
+                                                notebookThumbnailCache.put(pageNum, bmp)
+                                                bmp
+                                            } else null
                                         } else null
-                                    } else null
+                                    } catch (e: Exception) {
+                                        Log.w("PageThumbnailGridDialog", "Failed to render thumbnail for page $pageNum", e)
+                                        null
+                                    }
                                 }
                             }
 
@@ -206,9 +247,10 @@ fun PageThumbnailGridDialog(
                                             .background(MaterialTheme.colorScheme.background),
                                         contentAlignment = Alignment.Center
                                     ) {
-                                        if (thumbnailBitmap != null) {
+                                        val bmp = thumbnailBitmap
+                                        if (bmp != null && !bmp.isRecycled) {
                                             Image(
-                                                bitmap = thumbnailBitmap!!.asImageBitmap(),
+                                                bitmap = bmp.asImageBitmap(),
                                                 contentDescription = "Page $pageNum",
                                                 contentScale = ContentScale.Fit,
                                                 modifier = Modifier.fillMaxSize()

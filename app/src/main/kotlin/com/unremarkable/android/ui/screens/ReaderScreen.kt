@@ -103,6 +103,7 @@ fun ReaderScreen(
     onSelectDocument: (DocumentItem) -> Unit = {},
     onOpenMeetingRecorder: () -> Unit = {},
     onOptimizeCurrentPdf: ((File, String) -> Unit)? = null,
+    onPageChanged: ((docId: String, pageIndex: Int) -> Unit)? = null,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -110,9 +111,32 @@ fun ReaderScreen(
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
 
-    var currentPage by remember(document.id) { mutableIntStateOf(1) }
+    val initialPage = (document.lastOpenedPage + 1).coerceAtLeast(1)
     var totalPages by remember(document.id) {
         mutableIntStateOf(maxOf(document.pages.size, document.pageCount, 1))
+    }
+    var currentPage by remember(document.id) {
+        mutableIntStateOf(if (totalPages > 1) initialPage.coerceIn(1, totalPages) else initialPage)
+    }
+
+    val currentReadingPage by rememberUpdatedState(currentPage)
+    val currentDoc by rememberUpdatedState(document)
+    var lastNotifiedPage by remember(document.id) { mutableIntStateOf(currentPage) }
+
+    LaunchedEffect(document.id, currentPage) {
+        if (currentPage != lastNotifiedPage) {
+            lastNotifiedPage = currentPage
+            onPageChanged?.invoke(document.id, currentPage - 1)
+        }
+    }
+
+    DisposableEffect(document.id) {
+        onDispose {
+            val pageIdx = currentReadingPage - 1
+            if (pageIdx != currentDoc.lastOpenedPage) {
+                onPageChanged?.invoke(currentDoc.id, pageIdx)
+            }
+        }
     }
 
     val isAppDark = MaterialTheme.colorScheme.background == BasaltBgPrimary
@@ -167,7 +191,10 @@ fun ReaderScreen(
         when {
             isDrawingMode -> isDrawingMode = false
             zoomScale > 1.05f -> resetZoom()
-            else -> onBack()
+            else -> {
+                onPageChanged?.invoke(document.id, currentPage - 1)
+                onBack()
+            }
         }
     }
 
@@ -296,6 +323,11 @@ fun ReaderScreen(
         } else {
             val rmCount = document.subfiles.keys.count { it.endsWith(".rm", ignoreCase = true) }
             totalPages = maxOf(document.pages.size, document.pageCount, rmCount, 1)
+        }
+        if (currentPage > totalPages) {
+            currentPage = totalPages
+        } else if (currentPage == 1 && initialPage > 1 && totalPages >= initialPage) {
+            currentPage = initialPage
         }
     }
 
@@ -668,7 +700,10 @@ fun ReaderScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = onBack) {
+                        IconButton(onClick = {
+                            onPageChanged?.invoke(document.id, currentPage - 1)
+                            onBack()
+                        }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                         if (isFoldable) {
@@ -939,6 +974,7 @@ fun ReaderScreen(
             isVisible = showFavoritesShelf,
             documents = allDocuments,
             onSelectDocument = {
+                onPageChanged?.invoke(document.id, currentPage - 1)
                 onSelectDocument(it)
                 showFavoritesShelf = false
             },
@@ -987,6 +1023,7 @@ fun ReaderScreen(
                 totalPages = totalPages,
                 currentPage = currentPage,
                 pdfRenderer = pdfRenderer,
+                epubPages = epubPages,
                 blobStore = blobStore,
                 annotationStore = annotationStore,
                 onSelectPage = { currentPage = it },
