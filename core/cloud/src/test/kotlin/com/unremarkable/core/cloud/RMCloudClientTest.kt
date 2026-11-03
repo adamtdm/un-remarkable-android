@@ -124,4 +124,38 @@ class RMCloudClientTest {
         val req3 = server.takeRequest()
         assertEquals("Bearer fresh-token", req3.getHeader("Authorization"))
     }
+
+    @Test
+    fun `request retries on 429 too many requests and succeeds on next attempt`() = runBlocking {
+        val serverUrl = server.url("").toString().removeSuffix("/")
+        val storage = InMemoryTokenStorage(
+            AuthTokens(deviceToken = "dev-token", userToken = "valid-token")
+        )
+        val auth = AuthManager(storage = storage, authHost = serverUrl)
+        val client = RMCloudClient(auth = auth, syncHost = serverUrl)
+
+        // 1st request returns 429 with Retry-After: 0 (or 1)
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(429)
+                .setHeader("Retry-After", "1")
+                .setBody("Too Many Requests")
+        )
+        // 2nd request succeeds
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"hash": "rate-limited-root", "generation": 105, "schemaVersion": "4"}""")
+        )
+
+        val root = client.getRoot()
+        assertEquals("rate-limited-root", root.hash)
+        assertEquals(105L, root.generation)
+
+        assertEquals(2, server.requestCount)
+        val r1 = server.takeRequest()
+        val r2 = server.takeRequest()
+        assertEquals("/sync/v4/root", r1.path)
+        assertEquals("/sync/v4/root", r2.path)
+    }
 }

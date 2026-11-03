@@ -24,6 +24,7 @@ class PersistentDocumentRepository(
     private val lock = Any()
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
     private val docsMap = mutableMapOf<String, DocumentItem>()
+    private val pendingPageSyncIds = mutableSetOf<String>()
 
     @Volatile
     private var localRootHash: String = ""
@@ -34,6 +35,7 @@ class PersistentDocumentRepository(
         synchronized(lock) {
             localRootHash = prefs?.getString("root_hash", "").orEmpty()
             localGeneration = prefs?.getLong("generation", 0L) ?: 0L
+            pendingPageSyncIds.addAll(prefs?.getStringSet("pending_page_syncs", emptySet()).orEmpty())
             loadFromDisk()
         }
     }
@@ -127,6 +129,36 @@ class PersistentDocumentRepository(
         }
     }
 
+    override fun updateLastOpenedPage(id: String, pageIndex: Int) {
+        synchronized(lock) {
+            val existing = docsMap[id] ?: return
+            docsMap[id] = existing.copy(lastOpenedPage = pageIndex)
+            if (!existing.localOnly) {
+                pendingPageSyncIds.add(id)
+                prefs?.edit()?.putStringSet("pending_page_syncs", pendingPageSyncIds)?.apply()
+            }
+            persistToDisk()
+        }
+    }
+
+    override fun getPendingPageSyncDocIds(): Set<String> = synchronized(lock) {
+        pendingPageSyncIds.toSet()
+    }
+
+    override fun markPageSyncPending(id: String) {
+        synchronized(lock) {
+            pendingPageSyncIds.add(id)
+            prefs?.edit()?.putStringSet("pending_page_syncs", pendingPageSyncIds)?.apply()
+        }
+    }
+
+    override fun clearPageSyncPending(id: String) {
+        synchronized(lock) {
+            pendingPageSyncIds.remove(id)
+            prefs?.edit()?.putStringSet("pending_page_syncs", pendingPageSyncIds)?.apply()
+        }
+    }
+
     fun removeDocument(id: String) {
         synchronized(lock) {
             docsMap.remove(id)
@@ -171,6 +203,7 @@ class PersistentDocumentRepository(
     fun clearAll() {
         synchronized(lock) {
             docsMap.clear()
+            pendingPageSyncIds.clear()
             localRootHash = ""
             localGeneration = 0L
             if (docFile.exists()) docFile.delete()

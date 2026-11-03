@@ -45,6 +45,8 @@ import com.unremarkable.core.cloud.SyncResult
 import com.unremarkable.core.model.DocumentItem
 import com.unremarkable.core.model.PageRef
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -61,6 +63,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var annotationStore: AnnotationStore
     private lateinit var cloudClient: RMCloudClient
     private lateinit var syncEngine: SyncEngine
+    private var onImmediateSyncAction: (() -> Unit)? = null
+    private var onDocumentsRefreshed: (() -> Unit)? = null
 
     private var pendingShareIntent by mutableStateOf<Intent?>(null)
 
@@ -76,10 +80,36 @@ class MainActivity : ComponentActivity() {
         cloudClient = RMCloudClient(auth = authManager)
         syncEngine = SyncEngine(client = cloudClient, blobStore = blobStore, repository = repository)
 
-        // Force fresh index pull only if cloud documents were cached by an older schema without subfile maps
-        val existingDocs = repository.getAllDocuments()
-        if (existingDocs.any { !it.isFolder && !it.localOnly && it.subfiles.isEmpty() }) {
-            repository.saveRoot("", 0L)
+        // Asynchronously check cached documents and backfill lastOpenedPage without blocking main UI thread
+        lifecycleScope.launch(Dispatchers.IO) {
+            val existingDocs = repository.getAllDocuments()
+            if (existingDocs.any { !it.isFolder && !it.localOnly && it.subfiles.isEmpty() }) {
+                repository.saveRoot("", 0L)
+            }
+            var updatedAny = false
+            for (doc in existingDocs) {
+                if (!doc.isFolder && doc.lastOpenedPage == 0) {
+                    val metaHash = doc.subfiles.entries.firstOrNull { it.key.endsWith(".metadata") }?.value
+                    val cachedMeta = metaHash?.let { blobStore.getBlob(it) }
+                    if (cachedMeta != null) {
+                        val contentHash = doc.subfiles.entries.firstOrNull { it.key.endsWith(".content") }?.value
+                        val cachedContent = contentHash?.let { blobStore.getBlob(it) }
+                        val meta = com.unremarkable.core.model.DocumentMetadata.parseFromRaw(
+                            String(cachedMeta, java.nio.charset.StandardCharsets.UTF_8),
+                            cachedContent?.let { String(it, java.nio.charset.StandardCharsets.UTF_8) }
+                        )
+                        if (meta.lastOpenedPage > 0) {
+                            repository.updateLastOpenedPage(doc.id, meta.lastOpenedPage)
+                            updatedAny = true
+                        }
+                    }
+                }
+            }
+            if (updatedAny) {
+                withContext(Dispatchers.Main) {
+                    onDocumentsRefreshed?.invoke()
+                }
+            }
         }
 
         if (savedInstanceState == null) {
@@ -96,6 +126,15 @@ class MainActivity : ComponentActivity() {
 
             UnremarkableTheme(darkTheme = isDarkTheme) {
                 var documents by remember { mutableStateOf(repository.getAllDocuments()) }
+
+                DisposableEffect(Unit) {
+                    onDocumentsRefreshed = {
+                        documents = repository.getAllDocuments()
+                    }
+                    onDispose {
+                        onDocumentsRefreshed = null
+                    }
+                }
                 var selectedDocument by remember { mutableStateOf<DocumentItem?>(null) }
                 var currentFolderId by remember { mutableStateOf("") }
                 var isSyncing by remember { mutableStateOf(false) }
@@ -196,9 +235,77 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                var pageSyncJob by remember { mutableStateOf<Job?>(null) }
+
+                fun handlePageChanged(docId: String, pageIndex: Int, immediate: Boolean = false) {
+                    val prevDoc = repository.getDocument(docId)
+                    val pageActuallyChanged = prevDoc == null || prevDoc.lastOpenedPage != pageIndex
+                    val isPending = repository.getPendingPageSyncDocIds().contains(docId)
+
+                    if (pageActuallyChanged) {
+                        repository.updateLastOpenedPage(docId, pageIndex)
+                        documents = repository.getAllDocuments()
+                        if (selectedDocument?.id == docId && selectedDocument?.lastOpenedPage != pageIndex) {
+                            selectedDocument = selectedDocument?.copy(lastOpenedPage = pageIndex)
+                        }
+                    }
+
+                    val doc = repository.getDocument(docId) ?: return
+                    if (!authManager.isAuthenticated || doc.localOnly) return
+
+                    // Skip network call if page hasn't changed and no sync is pending
+                    if (!pageActuallyChanged && !isPending) {
+                        return
+                    }
+
+                    pageSyncJob?.cancel()
+                    pageSyncJob = lifecycleScope.launch {
+                        if (!immediate) {
+                            delay(2000)
+                        }
+                        try {
+                            val success = syncEngine.updateRemotePosition(docId, pageIndex)
+                            if (success) {
+                                syncGeneration = repository.getLocalGeneration()
+                                documents = repository.getAllDocuments()
+                            } else {
+                                // Stays queued in pending_page_syncs; retried on the next library sync
+                                repository.markPageSyncPending(docId)
+                                val reason = syncEngine.lastPositionSyncError ?: "unknown error"
+                                android.util.Log.w("UnremarkableSync", "Position push failed for $docId p$pageIndex: $reason")
+                                if (immediate) {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Couldn't sync reading position: $reason",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            android.util.Log.w("UnremarkableSync", "Position push crashed for $docId", e)
+                        }
+                    }
+                }
+
+                DisposableEffect(selectedDocument) {
+                    onImmediateSyncAction = {
+                        selectedDocument?.let { doc ->
+                            handlePageChanged(doc.id, doc.lastOpenedPage, immediate = true)
+                        }
+                    }
+                    onDispose {
+                        onImmediateSyncAction = null
+                    }
+                }
+
                 val easeOutExpo = remember { CubicBezierEasing(0.16f, 1f, 0.3f, 1f) }
 
                 BackHandler(enabled = selectedDocument != null && !showSettings) {
+                    selectedDocument?.let { doc ->
+                        handlePageChanged(doc.id, doc.lastOpenedPage, immediate = true)
+                    }
                     selectedDocument = null
                 }
 
@@ -266,7 +373,16 @@ class MainActivity : ComponentActivity() {
                                     showConverterSheet = true
                                 },
                                 selectedDocument = selectedDocument,
-                                onSelectDocument = { selectedDocument = it },
+                                onSelectDocument = { nextDoc ->
+                                    if (nextDoc == null && selectedDocument != null) {
+                                        val curr = selectedDocument!!
+                                        handlePageChanged(curr.id, curr.lastOpenedPage, immediate = true)
+                                    }
+                                    selectedDocument = nextDoc
+                                },
+                                onPageChanged = { docId, pageIndex ->
+                                    handlePageChanged(docId, pageIndex, immediate = false)
+                                },
                                 blobStore = blobStore,
                                 annotationStore = annotationStore,
                                 appSettings = appSettings,
@@ -524,6 +640,11 @@ class MainActivity : ComponentActivity() {
             }
         }
         return name ?: uri.path?.substringAfterLast('/')
+    }
+
+    override fun onStop() {
+        super.onStop()
+        onImmediateSyncAction?.invoke()
     }
 
     private fun sha256Hex(bytes: ByteArray): String =

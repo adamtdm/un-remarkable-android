@@ -76,6 +76,7 @@ fun AdaptiveScaffold(
     initialIsSidebarMinimized: Boolean = false,
     onSidebarMinimizedChanged: ((Boolean) -> Unit)? = null,
     onDeleteDocument: (DocumentItem) -> Unit = {},
+    onPageChanged: ((docId: String, pageIndex: Int) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
@@ -243,6 +244,7 @@ fun AdaptiveScaffold(
                             onSelectDocument = { onSelectDocument(it) },
                             onOpenMeetingRecorder = onOpenMeetingRecorder,
                             onOptimizeCurrentPdf = onOptimizeCurrentPdf,
+                            onPageChanged = onPageChanged,
                             onBack = { onSelectDocument(null) }
                         )
                     } else {
@@ -338,6 +340,7 @@ fun AdaptiveScaffold(
                         onSelectDocument = { onSelectDocument(it) },
                         onOpenMeetingRecorder = onOpenMeetingRecorder,
                         onOptimizeCurrentPdf = onOptimizeCurrentPdf,
+                        onPageChanged = onPageChanged,
                         onBack = { onSelectDocument(null) }
                     )
                 } else {

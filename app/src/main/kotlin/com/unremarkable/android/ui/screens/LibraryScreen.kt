@@ -995,8 +995,16 @@ fun LibraryScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        val totalPgs = maxOf(doc.pages.size, doc.pageCount)
+                        val pageDesc = if (doc.isFolder) {
+                            "Folder"
+                        } else if (doc.lastOpenedPage > 0 && totalPgs > 0) {
+                            "Page ${doc.lastOpenedPage + 1}/$totalPgs • ${formatRelativeDate(doc.lastModified)}"
+                        } else {
+                            "$totalPgs pages • ${formatRelativeDate(doc.lastModified)}"
+                        }
                         Text(
-                            text = if (doc.isFolder) "Folder" else "${maxOf(doc.pages.size, doc.pageCount)} pages • ${formatRelativeDate(doc.lastModified)}",
+                            text = pageDesc,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1498,8 +1506,13 @@ fun DocumentCard(
                     if (!document.isFolder) {
                         val pages = maxOf(document.pages.size, document.pageCount)
                         if (pages > 0) {
+                            val pageLabel = if (document.lastOpenedPage > 0) {
+                                "p. ${document.lastOpenedPage + 1}/$pages"
+                            } else {
+                                "$pages ${if (pages == 1) "pg" else "pgs"}"
+                            }
                             Text(
-                                text = "$pages ${if (pages == 1) "pg" else "pgs"}",
+                                text = pageLabel,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1671,8 +1684,16 @@ fun DocumentGridCard(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    val totalPgs = maxOf(document.pages.size, document.pageCount)
+                    val desc = if (document.isFolder) {
+                        "Folder"
+                    } else if (document.lastOpenedPage > 0 && totalPgs > 0) {
+                        "p. ${document.lastOpenedPage + 1}/$totalPgs • ${formatRelativeDate(document.lastModified)}"
+                    } else {
+                        "$totalPgs pgs • ${formatRelativeDate(document.lastModified)}"
+                    }
                     Text(
-                        text = if (document.isFolder) "Folder" else "${maxOf(document.pages.size, document.pageCount)} pgs • ${formatRelativeDate(document.lastModified)}",
+                        text = desc,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

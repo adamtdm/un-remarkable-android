@@ -228,4 +228,176 @@ class SyncEngineTest {
         assertTrue(syncedFolder?.isFolder == true)
         assertFalse(syncedFolder?.localOnly ?: true)
     }
+
+    @Test
+    fun `sync retrieves lastOpenedPage from cloud metadata`(@TempDir tempDir: File) = runBlocking {
+        val serverUrl = server.url("").toString().removeSuffix("/")
+        val storage = InMemoryTokenStorage(
+            AuthTokens(deviceToken = "dev-token", userToken = "user-token")
+        )
+        val auth = AuthManager(storage = storage, authHost = serverUrl)
+        val client = RMCloudClient(auth = auth, syncHost = serverUrl)
+        val blobStore = FileBlobStore(tempDir)
+        val repository = InMemorySyncRepository()
+        val engine = SyncEngine(client, blobStore, repository)
+
+        // 1. Root info
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"hash": "root-h1", "generation": 20, "schemaVersion": "4"}""")
+        )
+        // 2. Root docSchema
+        val rootIndex = """
+            4
+            0:.:1:200
+            doc-h1:80000000:doc-book-1:1:200
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(rootIndex))
+
+        // 3. Doc docSchema
+        val docIndex = """
+            4
+            0:.:1:150
+            meta-h1:0:doc-book-1.metadata:0:150
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(docIndex))
+
+        // 4. .metadata with lastOpenedPage = 14
+        val metaJson = """
+            {
+                "visibleName": "Science Fiction Novel",
+                "type": "DocumentType",
+                "lastModified": "1730800000000",
+                "lastOpened": "1730805000000",
+                "lastOpenedPage": 14,
+                "pinned": false
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(metaJson))
+
+        val result = engine.sync()
+        assertTrue(result is SyncResult.Success)
+
+        val doc = repository.getDocument("doc-book-1")
+        assertNotNull(doc)
+        assertEquals("Science Fiction Novel", doc?.visibleName)
+        assertEquals(14, doc?.lastOpenedPage)
+    }
+
+    @Test
+    fun `updateRemotePosition updates metadata content and broadcasts root update`(@TempDir tempDir: File) = runBlocking {
+        val serverUrl = server.url("").toString().removeSuffix("/")
+        val storage = InMemoryTokenStorage(
+            AuthTokens(deviceToken = "dev-token", userToken = "user-token")
+        )
+        val auth = AuthManager(storage = storage, authHost = serverUrl)
+        val client = RMCloudClient(auth = auth, syncHost = serverUrl)
+        val blobStore = FileBlobStore(tempDir)
+        val repository = InMemorySyncRepository()
+        val engine = SyncEngine(client, blobStore, repository)
+
+        val docId = "doc-uuid-99"
+        repository.upsertDocument(
+            DocumentItem(
+                id = docId,
+                visibleName = "Reading Book",
+                lastOpenedPage = 0,
+                pageCount = 10,
+                hash = "doc-schema-h1",
+                subfiles = mapOf("$docId.metadata" to "meta-h1", "$docId.content" to "content-h1")
+            )
+        )
+
+        // 1. getRoot()
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"hash": "root-h1", "generation": 10, "schemaVersion": "4"}""")
+        )
+        // 2. getRootIndex() (download root.docSchema)
+        val rootIndex = """
+            4
+            0:.:1:200
+            doc-schema-h1:80000000:$docId:1:200
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(rootIndex))
+
+        // 3. getBlob(docEntry.hash, doc-uuid-99.docSchema)
+        val docIndex = """
+            4
+            0:.:2:200
+            meta-h1:0:$docId.metadata:0:100
+            content-h1:0:$docId.content:0:100
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(docIndex))
+
+        // 4. getBlob(metaEntry.hash, doc-uuid-99.metadata)
+        val metaJson = """{"visibleName":"Reading Book","type":"DocumentType","lastOpenedPage":0}"""
+        server.enqueue(MockResponse().setResponseCode(200).setBody(metaJson))
+
+        // 5. putBlob(newMetaHash)
+        server.enqueue(MockResponse().setResponseCode(200))
+
+        // 6. getBlob(contentEntry.hash, doc-uuid-99.content)
+        val contentJson = """
+            {
+                "cPages": {
+                    "pages": [
+                        {"id": "page-0", "idx": {"value": "aa"}},
+                        {"id": "page-1", "idx": {"value": "ab"}},
+                        {"id": "page-2", "idx": {"value": "ac"}}
+                    ]
+                }
+            }
+        """.trimIndent()
+        server.enqueue(MockResponse().setResponseCode(200).setBody(contentJson))
+
+        // 7. putBlob(newContentHash)
+        server.enqueue(MockResponse().setResponseCode(200))
+
+        // 8. putBlob(newDocHash, doc-uuid-99.docSchema)
+        server.enqueue(MockResponse().setResponseCode(200))
+
+        // 9. putBlob(newRootHash, root.docSchema)
+        server.enqueue(MockResponse().setResponseCode(200))
+
+        // 10. updateRoot()
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"hash": "new-root-h2", "generation": 11}""")
+        )
+
+        // User reads to page index 2 (Page 3)
+        val success = engine.updateRemotePosition(docId, 2)
+        assertTrue(success, engine.lastPositionSyncError)
+
+        // The uploaded .docSchema must be named by the sha256 of its own bytes and carry the doc UUID header
+        val requests = (0 until server.requestCount).map { server.takeRequest() }
+        val docSchemaPut = requests.single { it.method == "PUT" && it.getHeader("rm-filename") == "$docId.docSchema" }
+        val docSchemaBody = docSchemaPut.body.readByteArray()
+        val uploadedHash = docSchemaPut.path!!.substringAfterLast('/')
+        assertEquals(IndexParser.computeRootHash(docSchemaBody), uploadedHash)
+        assertTrue(String(docSchemaBody, Charsets.UTF_8).lines()[1].startsWith("0:$docId:2:"))
+
+        // Root entry for the doc must point at the new doc index with updated subfile count/size
+        val rootPut = requests.single { it.method == "PUT" && it.getHeader("rm-filename") == "root.docSchema" }
+        val rootLines = rootPut.body.readUtf8().lines()
+        assertEquals("0:.:1:${rootLines[2].split(":")[4]}", rootLines[1])
+        assertTrue(rootLines[2].startsWith("$uploadedHash:80000000:$docId:2:"))
+
+        // Metadata keeps existing fields and gains the new page
+        val metaPut = requests.single { it.method == "PUT" && it.getHeader("rm-filename") == "$docId.metadata" }
+        val metaBody = metaPut.body.readUtf8()
+        assertTrue(metaBody.contains("\"lastOpenedPage\":2"))
+        assertTrue(metaBody.contains("\"visibleName\":\"Reading Book\""))
+
+        // .content cPages.lastOpened points at the 3rd page id
+        val contentPut = requests.single { it.method == "PUT" && it.getHeader("rm-filename") == "$docId.content" }
+        assertTrue(contentPut.body.readUtf8().contains("\"lastOpened\":{\"value\":\"page-2\""))
+
+        val updatedDoc = repository.getDocument(docId)
+        assertNotNull(updatedDoc)
+        assertEquals(2, updatedDoc?.lastOpenedPage)
+        assertEquals(11L, repository.getLocalGeneration())
+        assertFalse(repository.getPendingPageSyncDocIds().contains(docId))
+    }
 }

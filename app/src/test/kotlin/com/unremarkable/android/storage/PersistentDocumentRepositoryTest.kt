@@ -64,4 +64,27 @@ class PersistentDocumentRepositoryTest {
         assertFalse(tmpFile.exists(), "Temporary file should be cleanly moved/deleted")
         assertTrue(docFile.exists(), "Target file must exist")
     }
+
+    @Test
+    fun `test updateLastOpenedPage persists page position across instances`(@TempDir tempDir: File) {
+        val docFile = File(tempDir, "library_documents.json")
+        val repo1 = PersistentDocumentRepository(docFile = docFile, prefs = null)
+
+        val doc = DocumentItem(
+            id = "book-42",
+            visibleName = "Dune",
+            pageCount = 600,
+            lastOpenedPage = 0
+        )
+        repo1.upsertDocument(doc)
+        assertEquals(0, repo1.getDocument("book-42")?.lastOpenedPage)
+
+        repo1.updateLastOpenedPage("book-42", 42)
+        assertEquals(42, repo1.getDocument("book-42")?.lastOpenedPage)
+
+        val repo2 = PersistentDocumentRepository(docFile = docFile, prefs = null)
+        val loadedDoc = repo2.getDocument("book-42")
+        assertNotNull(loadedDoc)
+        assertEquals(42, loadedDoc?.lastOpenedPage)
+    }
 }

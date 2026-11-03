@@ -13,12 +13,20 @@ interface SyncRepository {
     fun getDocumentsInFolder(parentId: String): List<DocumentItem>
     fun getDocument(id: String): DocumentItem?
     fun searchDocuments(query: String): List<DocumentItem>
+    fun updateLastOpenedPage(id: String, pageIndex: Int) {
+        val existing = getDocument(id) ?: return
+        upsertDocument(existing.copy(lastOpenedPage = pageIndex))
+    }
+    fun getPendingPageSyncDocIds(): Set<String> = emptySet()
+    fun markPageSyncPending(id: String) {}
+    fun clearPageSyncPending(id: String) {}
 }
 
 class InMemorySyncRepository : SyncRepository {
     private var rootHash: String = ""
     private var generation: Long = 0L
     private val docs = mutableMapOf<String, DocumentItem>()
+    private val pendingPageSyncIds = mutableSetOf<String>()
 
     override fun getLocalRootHash(): String = rootHash
 
@@ -31,6 +39,25 @@ class InMemorySyncRepository : SyncRepository {
 
     override fun upsertDocument(doc: DocumentItem) {
         docs[doc.id] = doc
+    }
+
+    override fun updateLastOpenedPage(id: String, pageIndex: Int) {
+        docs[id]?.let {
+            docs[id] = it.copy(lastOpenedPage = pageIndex)
+            if (!it.localOnly) {
+                pendingPageSyncIds.add(id)
+            }
+        }
+    }
+
+    override fun getPendingPageSyncDocIds(): Set<String> = pendingPageSyncIds.toSet()
+
+    override fun markPageSyncPending(id: String) {
+        pendingPageSyncIds.add(id)
+    }
+
+    override fun clearPageSyncPending(id: String) {
+        pendingPageSyncIds.remove(id)
     }
 
     override fun markDocumentDeleted(id: String) {

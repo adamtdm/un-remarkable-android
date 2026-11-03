@@ -23,5 +23,6 @@ data class DocumentItem(
     val fileType: String = "",
     val subfiles: Map<String, String> = emptyMap(),
     val pages: List<PageRef> = emptyList(),
-    val localOnly: Boolean = false
+    val localOnly: Boolean = false,
+    val lastOpenedPage: Int = 0
 )

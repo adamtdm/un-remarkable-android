@@ -2,6 +2,7 @@ package com.unremarkable.core.cloud
 
 import com.unremarkable.core.model.Entry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -39,23 +40,47 @@ class RMCloudClient(
 
     private suspend fun executeRequest(
         builder: Request.Builder,
-        retryAuth: Boolean = true
+        retryAuth: Boolean = true,
+        maxRetries: Int = 3
     ): Response = withContext(Dispatchers.IO) {
-        val userToken = auth.getValidUserToken().getOrThrow()
-        val request = builder
-            .header("User-Agent", USER_AGENT)
-            .header("Authorization", "Bearer $userToken")
-            .build()
+        var attempt = 0
+        var backoffMs = 1000L
 
-        val response = client.newCall(request).execute()
+        while (true) {
+            attempt++
+            val userToken = auth.getValidUserToken().getOrThrow()
+            val request = builder
+                .header("User-Agent", USER_AGENT)
+                .header("Authorization", "Bearer $userToken")
+                .build()
 
-        if (response.code == 401 && retryAuth) {
-            response.close()
-            auth.refreshUserToken().getOrThrow()
-            return@withContext executeRequest(builder, retryAuth = false)
+            val response = client.newCall(request).execute()
+
+            if (response.code == 401 && retryAuth) {
+                response.close()
+                auth.refreshUserToken().getOrThrow()
+                return@withContext executeRequest(builder, retryAuth = false, maxRetries = maxRetries)
+            }
+
+            // Retry on 429 Too Many Requests or 5xx server errors with exponential backoff
+            if ((response.code == 429 || response.code in 500..504) && attempt <= maxRetries) {
+                val retryAfterHeader = response.header("Retry-After")
+                val retryAfterSec = retryAfterHeader?.toLongOrNull()
+                val sleepMs = if (retryAfterSec != null && retryAfterSec > 0) {
+                    (retryAfterSec * 1000L).coerceIn(1000L, 30000L)
+                } else {
+                    backoffMs
+                }
+                response.close()
+                delay(sleepMs)
+                backoffMs = (backoffMs * 2).coerceAtMost(16000L)
+                continue
+            }
+
+            return@withContext response
         }
-
-        response
+        @Suppress("UNREACHABLE_CODE")
+        throw IllegalStateException("Unreachable")
     }
 
     suspend fun getRoot(): RootInfo = withContext(Dispatchers.IO) {

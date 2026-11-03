@@ -10,6 +10,8 @@ data class DocumentMetadata(
     @SerialName("type") val type: String = TYPE_DOCUMENT,
     @SerialName("parent") val parent: String = "",
     @SerialName("lastModified") val lastModified: String = "",
+    @SerialName("lastOpened") val lastOpened: String = "",
+    @SerialName("lastOpenedPage") val lastOpenedPage: Int = 0,
     @SerialName("pinned") val pinned: Boolean = false,
     @SerialName("deleted") val deleted: Boolean = false,
     @SerialName("pageCount") val pageCount: Int = 0,
@@ -43,6 +45,8 @@ data class DocumentMetadata(
             var type = TYPE_DOCUMENT
             var parent = ""
             var lastModified = ""
+            var lastOpened = ""
+            var lastOpenedPage = 0
             var pinned = false
             var deleted = false
 
@@ -53,6 +57,10 @@ data class DocumentMetadata(
                     type = element["type"]?.jsonPrimitive?.contentOrNull ?: TYPE_DOCUMENT
                     parent = element["parent"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     lastModified = element["lastModified"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    lastOpened = element["lastOpened"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    lastOpenedPage = element["lastOpenedPage"]?.jsonPrimitive?.intOrNull
+                        ?: element["lastOpenedPage"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                        ?: 0
                     pinned = element["pinned"]?.jsonPrimitive?.booleanOrNull ?: false
                     deleted = element["deleted"]?.jsonPrimitive?.booleanOrNull ?: false
                 } catch (_: Exception) {}
@@ -74,6 +82,14 @@ data class DocumentMetadata(
                     }
                     if (lastModified.isBlank()) {
                         lastModified = element["lastModified"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    }
+                    if (lastOpened.isBlank()) {
+                        lastOpened = element["lastOpened"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    }
+                    val contentLastOpenedPage = element["lastOpenedPage"]?.jsonPrimitive?.intOrNull
+                        ?: element["lastOpenedPage"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                    if (contentLastOpenedPage != null && lastOpenedPage == 0) {
+                        lastOpenedPage = contentLastOpenedPage
                     }
                     if (!pinned) {
                         pinned = element["pinned"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -137,6 +153,16 @@ data class DocumentMetadata(
                             }
                         }
                     }
+
+                    if (lastOpenedPage == 0) {
+                        val lastOpenedPageId = element["cPages"]?.jsonObject?.get("lastOpened")?.jsonObject?.get("value")?.jsonPrimitive?.contentOrNull
+                        if (!lastOpenedPageId.isNullOrBlank()) {
+                            val foundIdx = parsedPages.indexOfFirst { it.pageId == lastOpenedPageId }
+                            if (foundIdx >= 0) {
+                                lastOpenedPage = foundIdx
+                            }
+                        }
+                    }
                 } catch (_: Exception) {}
             }
 
@@ -147,6 +173,8 @@ data class DocumentMetadata(
                 type = type,
                 parent = parent,
                 lastModified = lastModified,
+                lastOpened = lastOpened,
+                lastOpenedPage = lastOpenedPage,
                 pinned = pinned,
                 deleted = deleted,
                 pageCount = finalPageCount,

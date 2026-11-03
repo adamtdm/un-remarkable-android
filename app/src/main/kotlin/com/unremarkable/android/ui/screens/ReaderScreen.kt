@@ -191,10 +191,7 @@ fun ReaderScreen(
         when {
             isDrawingMode -> isDrawingMode = false
             zoomScale > 1.05f -> resetZoom()
-            else -> {
-                onPageChanged?.invoke(document.id, currentPage - 1)
-                onBack()
-            }
+            else -> onBack()
         }
     }
 
@@ -700,10 +697,7 @@ fun ReaderScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = {
-                            onPageChanged?.invoke(document.id, currentPage - 1)
-                            onBack()
-                        }) {
+                        IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                         if (isFoldable) {

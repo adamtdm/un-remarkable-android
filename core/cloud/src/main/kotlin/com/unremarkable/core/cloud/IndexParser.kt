@@ -46,7 +46,11 @@ object IndexParser {
         return Pair(entries, schema)
     }
 
-    fun formatIndex(entries: List<Entry>, schema: String = Entry.SCHEMA_V4): String {
+    /**
+     * Serialize an index. For schema v4 the summary line carries the owner id:
+     * "." for root.docSchema, the document UUID for a document's .docSchema.
+     */
+    fun formatIndex(entries: List<Entry>, schema: String = Entry.SCHEMA_V4, docId: String = "."): String {
         val sortedEntries = entries.sortedBy { it.docId }
         val sb = StringBuilder()
         sb.append(schema).append("\n")
@@ -54,7 +58,7 @@ object IndexParser {
         if (schema == Entry.SCHEMA_V4) {
             val totalSize = sortedEntries.sumOf { it.size }
             sb.append("0").append(Entry.DELIMITER)
-                .append(".").append(Entry.DELIMITER)
+                .append(docId).append(Entry.DELIMITER)
                 .append(sortedEntries.size).append(Entry.DELIMITER)
                 .append(totalSize).append("\n")
         }
@@ -64,6 +68,17 @@ object IndexParser {
         }
 
         return sb.toString()
+    }
+
+    /**
+     * Build a document's .docSchema bytes and its blob hash.
+     * Schema v4: hash = sha256(serialized bytes), header uses the doc UUID.
+     * Schema v3: hash = sha256 of concatenated raw subfile hashes.
+     */
+    fun buildDocSchema(entries: List<Entry>, schema: String, docId: String): Pair<ByteArray, String> {
+        val bytes = formatIndex(entries, schema, docId).toByteArray(Charsets.UTF_8)
+        val hash = if (schema == Entry.SCHEMA_V4) computeRootHash(bytes) else computeDocIndexHash(entries)
+        return bytes to hash
     }
 
     fun computeDocIndexHash(entries: List<Entry>): String {
