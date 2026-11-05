@@ -464,7 +464,7 @@ fun ReaderScreen(
         effectiveInvert -> BasaltBgPrimary
         else -> PaperBgPrimary
     }
-    val swipeThresholdPx = with(density) { 64.dp.toPx() }
+    val swipeThresholdPx = with(density) { 48.dp.toPx() }
     val pageStep = if (isDualPageMode) 2 else 1
     val pageTurnMode = appSettings?.pageTurnMode ?: PageTurnMode.SWIPE
 
@@ -474,13 +474,13 @@ fun ReaderScreen(
             .background(canvasBackground)
             .onSizeChanged { viewportSize = it }
             // Pinch-to-zoom, focal pan when zoomed, and horizontal swipe page turn at 1x
-            .pointerInput(document.id, isDrawingMode, fitMode, isDualPageMode, totalPages, pageTurnMode) {
+            .pointerInput(document.id, isDrawingMode, fitMode, isDualPageMode, totalPages, pageTurnMode, isFullscreen) {
                 if (isDrawingMode) return@pointerInput
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = false)
                     var wasMultiTouch = false
-                    var totalSwipeX = 0f
-                    var totalSwipeY = 0f
+                    val startPos = down.position
+                    var lastPos = down.position
 
                     do {
                         val event = awaitPointerEvent()
@@ -502,15 +502,14 @@ fun ReaderScreen(
                                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                             }
                         } else if (pressed.size == 1 && !wasMultiTouch) {
-                            val pan = event.calculatePan()
+                            val current = pressed.first()
+                            lastPos = current.position
                             if (zoomScale > 1.04f) {
+                                val pan = event.calculatePan()
                                 if (pan != Offset.Zero) {
                                     panOffset = clampPan(panOffset + pan, zoomScale)
                                     event.changes.forEach { if (it.positionChanged()) it.consume() }
                                 }
-                            } else if (fitMode == FitMode.FIT_PAGE) {
-                                totalSwipeX += pan.x
-                                totalSwipeY += pan.y
                             }
                         }
                     } while (event.changes.any { it.pressed })
@@ -519,8 +518,10 @@ fun ReaderScreen(
                         resetZoom()
                     }
                     val canSwipeTurn = pageTurnMode == PageTurnMode.SWIPE || pageTurnMode == PageTurnMode.BOTH
-                    if (canSwipeTurn && !wasMultiTouch && zoomScale <= 1.04f && fitMode == FitMode.FIT_PAGE) {
-                        if (abs(totalSwipeX) > swipeThresholdPx && abs(totalSwipeX) > abs(totalSwipeY) * 1.35f) {
+                    if (canSwipeTurn && !wasMultiTouch && zoomScale <= 1.04f) {
+                        val totalSwipeX = lastPos.x - startPos.x
+                        val totalSwipeY = lastPos.y - startPos.y
+                        if (abs(totalSwipeX) > swipeThresholdPx && abs(totalSwipeX) > abs(totalSwipeY) * 1.25f) {
                             if (totalSwipeX < 0 && currentPage < totalPages) {
                                 currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
                             } else if (totalSwipeX > 0 && currentPage > 1) {
@@ -531,7 +532,7 @@ fun ReaderScreen(
                 }
             }
             // Double-tap 2.25x zoom toggle + edge-tap page turns (disabled while zoomed)
-            .pointerInput(document.id, isDrawingMode, isDualPageMode, totalPages, pageTurnMode) {
+            .pointerInput(document.id, isDrawingMode, isDualPageMode, totalPages, pageTurnMode, isFullscreen) {
                 if (isDrawingMode) return@pointerInput
                 detectTapGestures(
                     onDoubleTap = { tapOffset ->
