@@ -7,8 +7,25 @@ enum class ThemeMode {
     SYSTEM, DARK, LIGHT
 }
 
+enum class PageTurnMode {
+    SWIPE, TAP, BOTH
+}
+
 class AppSettings(context: Context) {
     private val prefs = context.getSharedPreferences("rm_app_settings", Context.MODE_PRIVATE)
+
+    var pageTurnMode: PageTurnMode
+        get() {
+            val name = prefs.getString("page_turn_mode", PageTurnMode.SWIPE.name) ?: PageTurnMode.SWIPE.name
+            return try {
+                PageTurnMode.valueOf(name)
+            } catch (_: Exception) {
+                PageTurnMode.SWIPE
+            }
+        }
+        set(value) {
+            prefs.edit().putString("page_turn_mode", value.name).apply()
+        }
 
     var themeMode: ThemeMode
         get() {

@@ -58,6 +58,7 @@ import com.unremarkable.android.render.PdfOutlineParser
 import com.unremarkable.android.render.RmPageCanvasRenderer
 import com.unremarkable.android.storage.AnnotationStore
 import com.unremarkable.android.storage.AppSettings
+import com.unremarkable.android.storage.PageTurnMode
 import com.unremarkable.android.ui.components.*
 import com.unremarkable.android.ui.theme.BasaltBgPrimary
 import com.unremarkable.android.ui.theme.BasaltBgSecondary
@@ -465,6 +466,7 @@ fun ReaderScreen(
     }
     val swipeThresholdPx = with(density) { 64.dp.toPx() }
     val pageStep = if (isDualPageMode) 2 else 1
+    val pageTurnMode = appSettings?.pageTurnMode ?: PageTurnMode.SWIPE
 
     Box(
         modifier = modifier
@@ -472,7 +474,7 @@ fun ReaderScreen(
             .background(canvasBackground)
             .onSizeChanged { viewportSize = it }
             // Pinch-to-zoom, focal pan when zoomed, and horizontal swipe page turn at 1x
-            .pointerInput(document.id, isDrawingMode, fitMode, isDualPageMode, totalPages) {
+            .pointerInput(document.id, isDrawingMode, fitMode, isDualPageMode, totalPages, pageTurnMode) {
                 if (isDrawingMode) return@pointerInput
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -516,7 +518,8 @@ fun ReaderScreen(
                     if (zoomScale < 1.03f) {
                         resetZoom()
                     }
-                    if (!wasMultiTouch && zoomScale <= 1.04f && fitMode == FitMode.FIT_PAGE) {
+                    val canSwipeTurn = pageTurnMode == PageTurnMode.SWIPE || pageTurnMode == PageTurnMode.BOTH
+                    if (canSwipeTurn && !wasMultiTouch && zoomScale <= 1.04f && fitMode == FitMode.FIT_PAGE) {
                         if (abs(totalSwipeX) > swipeThresholdPx && abs(totalSwipeX) > abs(totalSwipeY) * 1.35f) {
                             if (totalSwipeX < 0 && currentPage < totalPages) {
                                 currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
@@ -528,7 +531,7 @@ fun ReaderScreen(
                 }
             }
             // Double-tap 2.25x zoom toggle + edge-tap page turns (disabled while zoomed)
-            .pointerInput(document.id, isDrawingMode, isDualPageMode, totalPages) {
+            .pointerInput(document.id, isDrawingMode, isDualPageMode, totalPages, pageTurnMode) {
                 if (isDrawingMode) return@pointerInput
                 detectTapGestures(
                     onDoubleTap = { tapOffset ->
@@ -546,15 +549,14 @@ fun ReaderScreen(
                         if (zoomScale > 1.05f) {
                             isHudVisible = !isHudVisible
                         } else {
+                            val canTapTurn = pageTurnMode == PageTurnMode.TAP || pageTurnMode == PageTurnMode.BOTH
                             val x = tapOffset.x
-                            when {
-                                x < size.width * 0.22f -> {
-                                    if (currentPage > 1) currentPage = (currentPage - pageStep).coerceAtLeast(1)
-                                }
-                                x > size.width * 0.78f -> {
-                                    if (currentPage < totalPages) currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
-                                }
-                                else -> isHudVisible = !isHudVisible
+                            if (canTapTurn && x < size.width * 0.22f) {
+                                if (currentPage > 1) currentPage = (currentPage - pageStep).coerceAtLeast(1)
+                            } else if (canTapTurn && x > size.width * 0.78f) {
+                                if (currentPage < totalPages) currentPage = (currentPage + pageStep).coerceAtMost(totalPages)
+                            } else {
+                                isHudVisible = !isHudVisible
                             }
                         }
                     }

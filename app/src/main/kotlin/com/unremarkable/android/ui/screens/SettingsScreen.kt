@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.unremarkable.android.storage.AppSettings
+import com.unremarkable.android.storage.PageTurnMode
 import com.unremarkable.android.storage.ThemeMode
 import com.unremarkable.core.model.DeviceProfile
 
@@ -38,6 +39,7 @@ fun SettingsScreen(
     var currentTheme by remember { mutableStateOf(appSettings.themeMode) }
     var currentProfile by remember { mutableStateOf(appSettings.defaultDeviceProfile) }
     var autoSync by remember { mutableStateOf(appSettings.autoSyncOnStart) }
+    var currentPageTurnMode by remember { mutableStateOf(appSettings.pageTurnMode) }
 
     BackHandler(onBack = onBack)
 
@@ -160,7 +162,67 @@ fun SettingsScreen(
                 }
             }
 
-            // 3. Default Hardware Target Profile
+            // 3. Page Turn Interaction Section
+            Text("Page Turn Interaction", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Choose whether a horizontal swipe or a tap changes pages in documents.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        SegmentedButton(
+                            selected = currentPageTurnMode == PageTurnMode.SWIPE,
+                            onClick = {
+                                currentPageTurnMode = PageTurnMode.SWIPE
+                                appSettings.pageTurnMode = PageTurnMode.SWIPE
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3)
+                        ) {
+                            Text("Swipe")
+                        }
+                        SegmentedButton(
+                            selected = currentPageTurnMode == PageTurnMode.TAP,
+                            onClick = {
+                                currentPageTurnMode = PageTurnMode.TAP
+                                appSettings.pageTurnMode = PageTurnMode.TAP
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3)
+                        ) {
+                            Text("Tap Edge")
+                        }
+                        SegmentedButton(
+                            selected = currentPageTurnMode == PageTurnMode.BOTH,
+                            onClick = {
+                                currentPageTurnMode = PageTurnMode.BOTH
+                                appSettings.pageTurnMode = PageTurnMode.BOTH
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3)
+                        ) {
+                            Text("Both")
+                        }
+                    }
+
+                    Text(
+                        text = when (currentPageTurnMode) {
+                            PageTurnMode.SWIPE -> "Swipe left/right to change pages. Tapping anywhere toggles the reading controls."
+                            PageTurnMode.TAP -> "Tap left or right screen edge to change pages. Swiping is disabled to avoid accidental flips."
+                            PageTurnMode.BOTH -> "Both horizontal swipe and edge-tapping change pages."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            // 4. Default Hardware Target Profile
             Text("Default Device Profile", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Surface(
                 color = MaterialTheme.colorScheme.surface,
