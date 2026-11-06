@@ -50,7 +50,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.security.MessageDigest
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -67,6 +66,7 @@ class MainActivity : ComponentActivity() {
     private var onDocumentsRefreshed: (() -> Unit)? = null
 
     private var pendingShareIntent by mutableStateOf<Intent?>(null)
+    private val libraryWriter = Dispatchers.IO.limitedParallelism(1)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -243,8 +243,12 @@ class MainActivity : ComponentActivity() {
                     val isPending = repository.getPendingPageSyncDocIds().contains(docId)
 
                     if (pageActuallyChanged) {
-                        repository.updateLastOpenedPage(docId, pageIndex)
-                        documents = repository.getAllDocuments()
+                        // Saving rewrites the whole library file, so keep it off the UI thread.
+                        // One writer thread keeps fast page turns in order.
+                        lifecycleScope.launch {
+                            withContext(libraryWriter) { repository.updateLastOpenedPage(docId, pageIndex) }
+                            documents = repository.getAllDocuments()
+                        }
                         if (selectedDocument?.id == docId && selectedDocument?.lastOpenedPage != pageIndex) {
                             selectedDocument = selectedDocument?.copy(lastOpenedPage = pageIndex)
                         }
@@ -395,7 +399,20 @@ class MainActivity : ComponentActivity() {
                                     if (selectedDocument?.id == doc.id) {
                                         selectedDocument = null
                                     }
-                                    Toast.makeText(this@MainActivity, "\"${doc.visibleName}\" moved to trash", Toast.LENGTH_SHORT).show()
+                                    if (doc.localOnly) {
+                                        Toast.makeText(this@MainActivity, "\"${doc.visibleName}\" deleted", Toast.LENGTH_SHORT).show()
+                                    } else lifecycleScope.launch {
+                                        // Cloud docs go to the reMarkable trash; undo locally if that fails so nothing silently reappears
+                                        val result = syncEngine.moveToTrash(doc.id)
+                                        val message = if (result.isSuccess) {
+                                            "\"${doc.visibleName}\" moved to trash"
+                                        } else {
+                                            repository.upsertDocument(doc.copy(deleted = false))
+                                            documents = repository.getAllDocuments()
+                                            "Couldn't move \"${doc.visibleName}\" to trash: ${result.exceptionOrNull()?.message}"
+                                        }
+                                        Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                                    }
                                 }
                             )
 
@@ -461,7 +478,7 @@ class MainActivity : ComponentActivity() {
                                     val pdfBytes = withContext(Dispatchers.Default) {
                                         AndroidDocumentOptimizer.generateQuickCapturePdf(text, isTask, now)
                                     }
-                                    val pdfHash = sha256Hex(pdfBytes)
+                                    val pdfHash = FileBlobStore.sha256(pdfBytes)
                                     withContext(Dispatchers.IO) {
                                         blobStore.putBlob(pdfHash, pdfBytes)
                                     }
@@ -555,7 +572,7 @@ class MainActivity : ComponentActivity() {
                                                 onProgress = { p -> conversionProgress = p.message }
                                             )
                                         }
-                                        val pdfHash = sha256Hex(result.pdfBytes)
+                                        val pdfHash = FileBlobStore.sha256(result.pdfBytes)
                                         withContext(Dispatchers.IO) {
                                             blobStore.putBlob(pdfHash, result.pdfBytes)
                                         }
@@ -620,7 +637,6 @@ class MainActivity : ComponentActivity() {
         if (intent == null) return
         val uri: Uri? = when (intent.action) {
             Intent.ACTION_SEND -> intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: intent.data
-            Intent.ACTION_SEND_MULTIPLE -> intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.firstOrNull()
             else -> null
         }
         if (uri != null) {
@@ -646,9 +662,4 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         onImmediateSyncAction?.invoke()
     }
-
-    private fun sha256Hex(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString("") { "%02x".format(it) }
 }

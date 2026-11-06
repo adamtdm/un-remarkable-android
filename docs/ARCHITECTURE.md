@@ -1,120 +1,98 @@
-# Un-remarkable Android Architecture Specification
+# Architecture
 
-This document details the architectural blueprint for the standalone Un-remarkable Android companion application.
+How Un-remarkable for Android is put together. For features and build steps, see the [README](../README.md).
 
----
+## Principles
 
-## 1. Design Principles & Goals
+1. **No server.** The phone talks to the reMarkable cloud directly over HTTPS.
+2. **Small core.** Protocol, parsing and conversion logic live in plain Kotlin/JVM modules (`core/*`) with unit tests. Android-only code stays in `app`.
+3. **Never lose user data.** Local-only items stay local until the cloud confirms them, and every file write goes to a temp file first, then gets moved into place.
 
-1. **Zero External Server Dependency:**
-   The Android application runs 100% autonomously. It does not require a Docker container, Python backend, or MCP host. It speaks directly to reMarkable's cloud infrastructure via HTTPS and WebSockets.
-2. **Battery & Data Efficiency:**
-   Utilizes Android `WorkManager` with network constraints for periodic library metadata refreshes, and foreground WebSockets for real-time synchronization while actively browsing.
-3. **High-Performance On-Device Media Processing:**
-   Executes document optimization (PDF, EPUB, CBZ) using native Android graphics and memory-mapped buffers to prevent out-of-memory errors on large graphic novels.
-4. **Authentic Vector Rendering:**
-   Renders native `.rm` v6 binary stroke trees using Android `Canvas` / `Path` commands with perceptual OKLCH dark mode color mapping.
-
----
-
-## 2. Module Breakdown
+## Modules
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      :app (UI Layer)                        │
-│  - Jetpack Compose + Material 3                             │
-│  - Fullscreen Reader HUD & OKLCH Dark Mode                  │
-│  - Converter View & Device Target Selector                  │
-│  - Quick Capture Bottom Sheet / Dialog                      │
-│  - Quick Settings Tile & App Widget                         │
-└──────────────┬───────────────────────────────┬──────────────┘
-               │                               │
-┌──────────────▼──────────────┐ ┌──────────────▼──────────────┐
-│       :core:converter       │ │        :core:render         │
-│ - PDF/EPUB/CBZ processing   │ │ - .rm v6 binary parser      │
-│ - 5-stop quality downscale  │ │ - Vector stroke generator   │
-│ - 2-page spread splitter    │ │ - OKLCH shader & palette    │
-│ - Native hardware profiles  │ │ - Distraction-free HUD      │
-└──────────────┬──────────────┘ └──────────────┬──────────────┘
-               │                               │
-┌──────────────▼───────────────────────────────▼──────────────┐
-│                      :core:database                         │
-│ - Room Database (Documents, Folders, Blobs, Tasks)          │
-│ - SQLite FTS5 Full-Text Search Table                        │
-│ - Local content-addressed blob storage (filesDir/blobs/)     │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-┌──────────────────────────────▼──────────────────────────────┐
-│                        :core:cloud                          │
-│ - Device Pairing (my.remarkable.com/token/json/2/device/new)│
-│ - User Token Refresh (my.remarkable.com/token/json/2/user/new│
-│ - sync15 Protocol (Root tree, manifests, blob downloads)    │
-│ - WebSocket Push Notification Client                        │
-│ - EncryptedSharedPreferences (Hardware-backed Keystore)     │
-└─────────────────────────────────────────────────────────────┘
+            ┌──────────────────────────────┐
+            │ app (Compose UI, Android I/O)│
+            └──┬──────────┬──────────┬─────┘
+               │          │          │
+     ┌─────────▼──┐ ┌─────▼─────┐ ┌──▼─────────────┐
+     │ core/cloud │ │core/render│ │ core/converter │
+     └─────────┬──┘ └───────────┘ └──┬─────────────┘
+               │                     │
+            ┌──▼─────────────────────▼──┐
+            │        core/model         │
+            └───────────────────────────┘
 ```
 
----
+| Module | What it does |
+|---|---|
+| `core/model` | `DocumentItem`, `DocumentMetadata` (parses `.metadata`/`.content`), index `Entry`, `DeviceProfile`, the `SyncRepository` interface |
+| `core/cloud` | `AuthManager` (pairing, token refresh), `RMCloudClient` (HTTP with 401 refresh and 429/5xx backoff), `SyncEngine`, `IndexParser`, `FileBlobStore` |
+| `core/render` | `RmBinaryParser` for `.rm` v3/v5/v6, scene model, `RmColor` (OKLCH inversion), `RmSvgRenderer` |
+| `core/converter` | Spread detection and splitting, 5 quality stops, PDF writer |
+| `app` | `MainActivity` (wires everything, runs sync), screens and dialogs, `PdfDocumentRenderer`, `RmPageCanvasRenderer`, `AndroidDocumentOptimizer`, storage (`PersistentDocumentRepository`, `AnnotationStore`, `AppSettings`, `AndroidTokenStorage`) |
 
-## 3. Core Subsystems
+## Authentication
 
-### 3.1 Authentication & sync15 Cloud Client (`:core:cloud`)
+1. The user gets an 8-character code from `my.remarkable.com/device/desktop/connect`.
+2. `POST {auth host}/token/json/2/device/new` with `{code, deviceDesc, deviceID}` returns a long-lived **device token**.
+3. `POST {auth host}/token/json/2/user/new` with the device token returns a short-lived **user token** (a JWT). The app refreshes it before it expires and again on any 401.
 
-- **Pairing Flow:**
-  1. User navigates to `my.remarkable.com/device/browser/connect` and copies the 8-character code.
-  2. Android app sends a `POST` request to `https://my.remarkable.com/token/json/2/device/new` with:
-     ```json
-     {
-       "code": "abcdefgh",
-       "deviceDesc": "android",
-       "deviceID": "<uuid>"
-     }
-     ```
-  3. Returns a permanent Device Token stored in Android's `EncryptedSharedPreferences`.
-  4. Device token is exchanged for temporary User Tokens via `https://my.remarkable.com/token/json/2/user/new`.
+The auth host is `webapp-prod.cloud.remarkable.engineering`. Tokens live in private `SharedPreferences`, and the app is excluded from Android backups (`allowBackup="false"`).
 
-- **Sync Protocol:**
-  - Connects to WebSocket notification service for document change notifications.
-  - Pulls latest sync root generation from `internal.cloud.remarkable.com/sync/v1/root`.
-  - Walks the generation tree to identify added, modified, or deleted document manifests.
-  - Downloads only missing blobs into `context.filesDir/blobs/{hash}` (content-addressed store).
+## Sync (`sync15`)
 
-### 3.2 On-Device Document & Comic Converter (`:core:converter`)
+The cloud stores files as content-addressed blobs. A **root index** (`root.docSchema`) lists one entry per document. Each document has its own index (`<id>.docSchema`) that lists its subfiles: `.metadata`, `.content`, `.pdf`, page `.rm` files and so on. The root carries a **generation** number, which works like a version counter: updating the root only succeeds if you send the generation you read.
 
-- **Input Formats:** `.pdf`, `.cbz` (zip of JPEGs/PNGs/WebPs), `.epub` (extracts image spine or XHTML text).
-- **Device Profiles:**
-  - **reMarkable Paper Pro:** 2160 × 1620 (229 PPI, Color Canvas)
-  - **reMarkable Paper Pro Move:** 1620 × 2160 (Portrait)
-  - **reMarkable 2:** 1872 × 1404 (226 PPI, Grayscale)
-  - **reMarkable 1:** 1872 × 1404 (226 PPI, Grayscale)
-- **5-Stop Quality Presets:**
-  - Stop 1 (Smallest): Max 1600px, JPEG q65 (~75% reduction)
-  - Stop 2 (Compact): Max 1920px, JPEG q72 (~65% reduction)
-  - Stop 3 (Balanced - Recommended): 1:1 screen match, JPEG q82 (~50% reduction)
-  - Stop 4 (Sharp): High-res, JPEG q88 (~40% reduction)
-  - Stop 5 (Best): Max fidelity, JPEG q92 (~10% reduction)
-- **Spread Splitting & Orientation:**
-  - Evaluates aspect ratio: if `width > height * 1.15`, treats as a two-page spread.
-  - Splits left half and right half into two separate portrait pages.
-  - Manga mode swaps ordering: splits right half first, then left half.
-- **Output:** Writes clean single-layer PDF using `android.graphics.pdf.PdfDocument`, creates `.content` and `.pagedata` metadata, and pushes directly to reMarkable cloud.
+`SyncEngine.sync()`:
 
-### 3.3 Vector `.rm` Parser & OKLCH Dark Mode (`:core:render`)
+1. Pushes queued reading positions.
+2. Uploads local-only folders, then local-only PDFs. An uploaded PDF is retired locally straight away, because the cloud copy gets a new id. This means a failure later in the sync can't upload it twice.
+3. Reads the root. If the hash and generation match what we last saw and nothing was uploaded, the sync stops here.
+4. Downloads only document indexes whose hash changed, plus their `.metadata`/`.content` (3 at a time). Page payloads download on demand in the reader.
+5. Marks local documents that are missing from the root as deleted. Documents whose parent is `trash` count as deleted.
+6. Saves the new root hash and generation.
 
-- **`.rm` v6 Binary Format:**
-  - Header: `reMarkable .lines file, version=6`
-  - Tagged blocks: Layers, stroke groups, anchor points, pen type, color, thickness.
-  - Text item CRDT: typed text characters, paragraphs, formatting styles.
-- **Perceptual OKLCH Inversion:**
-  - Convert sRGB color to OKLCH $(L, C, H)$.
-  - Invert luminance: $L_{new} = 1.0 - L_{old}$.
-  - Apply gamut mapping to prevent chromatic saturation clipping.
-  - Result: Highlighters and colored annotations remain vibrant, while dark ink on white canvas transforms into crisp light ink on pure dark background without discoloration.
+**Writing to the cloud** (reading position, move to trash, new folder) follows one pattern in `SyncEngine.editRemoteDoc` / `commitRoot`:
 
-### 3.4 Quick Capture & Task Intelligence (`:app` & `:core:database`)
+1. Rewrite the JSON subfile.
+2. Upload it under its sha256.
+3. Rebuild the document index with the same schema as the root. In schema v4, the index is named by the sha256 of its own bytes, and its header carries the document id.
+4. Rebuild the root index, upload it, then `PUT /sync/v3/root` with the old generation.
 
-- Fast input modal triggered from app, Quick Settings Tile, or Android Share Sheet.
-- Modes:
-  - **Task:** Formats item as `- [ ] <text>` and appends to the tablet's designated "Tasks" notebook.
-  - **Quick Note:** Formats item with ISO timestamp and appends to "Quick Notes".
-- Automatically triggers a sync generation upload so the note appears on the user's tablet immediately.
+The local root hash only moves forward if we were already in sync, so changes made on other devices are still pulled next time.
+
+## Rendering
+
+- **Notebooks:** `RmBinaryParser` reads tagged v6 blocks (layers, strokes, points with pressure and tilt, typed text). It also reads the older v3/v5 formats. `RmPageCanvasRenderer` draws the strokes with Android `Canvas`/`Path`, simulating each pen type.
+- **PDFs:** Android `PdfRenderer` draws the pages, and any `.rm` annotation layer is drawn on top.
+- **Dark mode:** each colour is converted to OKLCH, its lightness is inverted (`L' = 1 − L`), and the result is mapped back into the sRGB range. Black ink becomes light ink on dark paper, while hues and highlighters stay recognisable.
+
+## Converter
+
+- Inputs: PDF, CBZ/zip of images, single images.
+- Device targets: Paper Pro 2160×1620, Paper Pro Move 1620×2160, RM2 and RM1 1872×1404.
+- Quality stops: Smallest (1200×1600, q65), Compact (1440×1920, q72), Balanced (1620×2160, q82, recommended), Sharp (1920×2560, q88), Best (2250×3000, q92).
+- A page wider than 1.15× its height counts as a two-page spread. It's split into two portrait pages, right half first in manga mode.
+- The output PDF is added to the library as a local-only document and uploaded on the next sync.
+
+## Local storage (app private files)
+
+| Path | Contents |
+|---|---|
+| `files/blobs/<2-char prefix>/<sha256>` | Cached cloud blobs |
+| `files/library_documents.json` | Library (document list, hashes, reading positions) |
+| `files/annotations/` | On-phone ink and bookmarks, per document page |
+| `shared_prefs/rm_auth_prefs` | Device and user tokens |
+| `shared_prefs/rm_sync_state` | Last root hash and generation, pending position pushes |
+| `cache/exports/` | Exported PDFs and sleep screens, shared through `FileProvider` |
+
+## Not built yet
+
+These ideas are not in the code yet:
+
+- background sync with WorkManager
+- WebSocket live updates
+- full-text search with SQLite FTS5
+- a Quick Settings tile and home screen widget
+- EPUB conversion

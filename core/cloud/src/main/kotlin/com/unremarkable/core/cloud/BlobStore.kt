@@ -84,14 +84,7 @@ class FileBlobStore(private val baseDir: File) : BlobStore {
     }
 
     companion object {
-        fun sha256(data: ByteArray): String {
-            val md = MessageDigest.getInstance("SHA-256")
-            val digest = md.digest(data)
-            val sb = StringBuilder()
-            for (b in digest) {
-                sb.append(String.format("%02x", b))
-            }
-            return sb.toString()
-        }
+        fun sha256(data: ByteArray): String =
+            MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
     }
 }
