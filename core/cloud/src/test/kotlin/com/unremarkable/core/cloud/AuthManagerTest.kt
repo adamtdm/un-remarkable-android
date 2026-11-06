@@ -48,7 +48,7 @@ class AuthManagerTest {
         // Verify request 1
         val req1 = server.takeRequest()
         assertEquals("/token/json/2/device/new", req1.path)
-        assertTrue(req1.body.readUtf8().contains(""""code": "abcdefgh""""))
+        assertTrue(req1.body.readUtf8().contains(""""code":"abcdefgh""""))
 
         // Verify request 2
         val req2 = server.takeRequest()

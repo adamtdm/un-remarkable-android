@@ -177,17 +177,17 @@ class SyncEngineTest {
         val engine = SyncEngine(client, blobStore, repository)
 
         // createRemoteFolder sequence:
-        // 1. putBlob(.metadata)
-        server.enqueue(MockResponse().setResponseCode(200))
-        // 2. putBlob(.docSchema)
-        server.enqueue(MockResponse().setResponseCode(200))
-        // 3. getRoot()
+        // 1. getRoot() (v4 root: the folder index must be v4 too)
         server.enqueue(
             MockResponse().setResponseCode(200)
-                .setBody("""{"hash": "initial-root", "generation": 1, "schemaVersion": "3"}""")
+                .setBody("""{"hash": "initial-root", "generation": 1, "schemaVersion": "4"}""")
         )
-        // 4. getRootIndex()
-        server.enqueue(MockResponse().setResponseCode(200).setBody("3\n"))
+        // 2. getRootIndex()
+        server.enqueue(MockResponse().setResponseCode(200).setBody("4\n0:.:0:0\n"))
+        // 3. putBlob(.metadata)
+        server.enqueue(MockResponse().setResponseCode(200))
+        // 4. putBlob(.docSchema)
+        server.enqueue(MockResponse().setResponseCode(200))
         // 5. putBlob(new root.docSchema)
         server.enqueue(MockResponse().setResponseCode(200))
         // 6. updateRoot()
@@ -227,6 +227,13 @@ class SyncEngineTest {
         assertEquals("Meeting Notes", syncedFolder?.visibleName)
         assertTrue(syncedFolder?.isFolder == true)
         assertFalse(syncedFolder?.localOnly ?: true)
+
+        // The folder's .docSchema must be named by the sha256 of its own bytes (schema v4)
+        val docSchemaPut = (0 until server.requestCount).map { server.takeRequest() }
+            .single { it.method == "PUT" && it.getHeader("rm-filename") == "folder-meeting-1.docSchema" }
+        val body = docSchemaPut.body.readByteArray()
+        assertEquals(IndexParser.computeRootHash(body), docSchemaPut.path!!.substringAfterLast('/'))
+        assertTrue(String(body, Charsets.UTF_8).startsWith("4\n0:folder-meeting-1:1:"))
     }
 
     @Test
@@ -297,6 +304,7 @@ class SyncEngineTest {
         val engine = SyncEngine(client, blobStore, repository)
 
         val docId = "doc-uuid-99"
+        repository.saveRoot("root-h1", 10)
         repository.upsertDocument(
             DocumentItem(
                 id = docId,
@@ -399,5 +407,68 @@ class SyncEngineTest {
         assertEquals(2, updatedDoc?.lastOpenedPage)
         assertEquals(11L, repository.getLocalGeneration())
         assertFalse(repository.getPendingPageSyncDocIds().contains(docId))
+    }
+
+    @Test
+    fun `moveToTrash sets metadata parent to trash and only advances local root when in sync`(@TempDir tempDir: File) = runBlocking {
+        val serverUrl = server.url("").toString().removeSuffix("/")
+        val auth = AuthManager(
+            storage = InMemoryTokenStorage(AuthTokens(deviceToken = "dev-token", userToken = "user-token")),
+            authHost = serverUrl
+        )
+        val repository = InMemorySyncRepository()
+        repository.saveRoot("older-root", 5) // another device changed the cloud since our last sync
+        val engine = SyncEngine(RMCloudClient(auth = auth, syncHost = serverUrl), FileBlobStore(tempDir), repository)
+        val docId = "doc-1"
+
+        server.enqueue(MockResponse().setBody("""{"hash": "root-h1", "generation": 10, "schemaVersion": "4"}"""))
+        server.enqueue(MockResponse().setBody("4\n0:.:1:100\ndoc-h1:80000000:$docId:1:100\n"))
+        server.enqueue(MockResponse().setBody("4\n0:$docId:1:100\nmeta-h1:0:$docId.metadata:0:100\n"))
+        server.enqueue(MockResponse().setBody("""{"visibleName":"Old Book","parent":"","type":"DocumentType"}"""))
+        server.enqueue(MockResponse()) // put .metadata
+        server.enqueue(MockResponse()) // put .docSchema
+        server.enqueue(MockResponse()) // put root.docSchema
+        server.enqueue(MockResponse().setBody("""{"generation": 11}"""))
+
+        assertTrue(engine.moveToTrash(docId).isSuccess)
+
+        val metaPut = (0 until server.requestCount).map { server.takeRequest() }
+            .single { it.method == "PUT" && it.getHeader("rm-filename") == "$docId.metadata" }
+        val metaBody = metaPut.body.readUtf8()
+        assertTrue(metaBody.contains("\"parent\":\"trash\""))
+        assertTrue(metaBody.contains("\"visibleName\":\"Old Book\""))
+        // We built on a root we had not pulled yet, so the next sync must still pull it
+        assertEquals("older-root", repository.getLocalRootHash())
+    }
+
+    @Test
+    fun `uploaded local doc is retired even if the rest of the sync fails`(@TempDir tempDir: File) = runBlocking {
+        val serverUrl = server.url("").toString().removeSuffix("/")
+        val auth = AuthManager(
+            storage = InMemoryTokenStorage(AuthTokens(deviceToken = "dev-token", userToken = "user-token")),
+            authHost = serverUrl
+        )
+        val blobStore = FileBlobStore(tempDir)
+        val repository = InMemorySyncRepository()
+        val pdf = "%PDF-1.4 test".toByteArray()
+        val pdfHash = IndexParser.computeRootHash(pdf)
+        blobStore.putBlob(pdfHash, pdf)
+        repository.upsertDocument(
+            DocumentItem(id = "local-1", visibleName = "Quick Note", fileType = "pdf", hash = pdfHash,
+                subfiles = mapOf("local-1.pdf" to pdfHash), localOnly = true)
+        )
+        val engine = SyncEngine(RMCloudClient(auth = auth, syncHost = serverUrl), blobStore, repository)
+
+        server.enqueue(MockResponse().setResponseCode(200)) // upload succeeds
+        server.enqueue(MockResponse().setResponseCode(404)) // getRoot fails
+
+        assertTrue(engine.sync() is SyncResult.Error)
+        assertNull(repository.getDocument("local-1"))
+
+        // A retry must not upload the document again
+        server.enqueue(MockResponse().setResponseCode(404))
+        engine.sync()
+        val posts = (0 until server.requestCount).map { server.takeRequest() }.count { it.method == "POST" }
+        assertEquals(1, posts)
     }
 }

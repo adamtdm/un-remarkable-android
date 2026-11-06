@@ -18,4 +18,5 @@ build/
 captures/
 .externalNativeBuild
 .cxx
-apk-dist/*.apk
+# Local symlink to the APK mirror; publish APKs as GitHub Releases instead
+apk-dist

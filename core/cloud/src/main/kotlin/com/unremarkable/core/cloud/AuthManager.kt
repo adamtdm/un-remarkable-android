@@ -4,6 +4,8 @@ import com.unremarkable.core.model.AuthTokens
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -72,13 +74,11 @@ class AuthManager(
         }
 
         val deviceId = tokens.deviceId.ifBlank { UUID.randomUUID().toString() }
-        val payload = """
-            {
-                "code": "$cleanCode",
-                "deviceDesc": "$deviceDesc",
-                "deviceID": "$deviceId"
-            }
-        """.trimIndent()
+        val payload = buildJsonObject {
+            put("code", cleanCode)
+            put("deviceDesc", deviceDesc)
+            put("deviceID", deviceId)
+        }.toString()
 
         val request = Request.Builder()
             .url("$authHost/token/json/2/device/new")

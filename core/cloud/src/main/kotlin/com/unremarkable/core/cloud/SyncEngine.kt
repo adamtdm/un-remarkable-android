@@ -47,7 +47,7 @@ class SyncEngine(
     private val repository: SyncRepository,
     private val maxConcurrency: Int = 3
 ) {
-    private val positionSyncMutex = Mutex()
+    private val remoteWriteMutex = Mutex()
     private val lastPushedPositionByDocId = ConcurrentHashMap<String, Int>()
     suspend fun sync(onProgress: (SyncProgress) -> Unit = {}): SyncResult = withContext(Dispatchers.IO) {
         try {
@@ -99,6 +99,9 @@ class SyncEngine(
                             fileType = ext
                         )
                         uploadedLocalIds.add(localDoc.id)
+                        // The cloud copy (with a server-assigned id) replaces this one on the pull below.
+                        // Retire it now so a failure later in this sync can never upload it twice.
+                        repository.markDocumentDeleted(localDoc.id)
                     } catch (_: Exception) {
                         // Keep localOnly = true so offline or transient failure never loses user data
                     }
@@ -224,7 +227,7 @@ class SyncEngine(
             isFolder = metadata.isFolder,
             pageCount = metadata.pageCount,
             pinned = metadata.pinned,
-            deleted = metadata.deleted,
+            deleted = metadata.deleted || metadata.parent == "trash",
             lastModified = metadata.lastModified.toLongOrNull() ?: System.currentTimeMillis(),
             tags = metadata.tags,
             hash = docHash,
@@ -237,164 +240,26 @@ class SyncEngine(
     }
 
     suspend fun updateRemotePosition(docId: String, pageIndex: Int): Boolean = withContext(Dispatchers.IO) {
-        positionSyncMutex.withLock {
+        remoteWriteMutex.withLock {
             if (lastPushedPositionByDocId[docId] == pageIndex && !repository.getPendingPageSyncDocIds().contains(docId)) {
                 return@withLock true
             }
             try {
-                val root = client.getRoot()
-            val (rootEntries, rootSchema) = client.getRootIndex(root.hash)
-
-            val docEntry = rootEntries.firstOrNull { it.docId == docId }
-                ?: throw IllegalStateException("Document $docId not found in cloud root")
-
-            val rawDocIndex = getOrFetchBlob(docEntry.hash, "$docId.docSchema")
-            val (subfiles, docSchemaVer) = IndexParser.parseIndex(rawDocIndex)
-
-            val metaEntry = subfiles.firstOrNull { it.docId.endsWith(".metadata") }
-                ?: throw IllegalStateException("Document $docId has no .metadata subfile")
-            val contentEntry = subfiles.firstOrNull { it.docId.endsWith(".content") }
-
-            val nowMs = System.currentTimeMillis().toString()
-
-            // 1. Update .metadata (never upload a blank metadata if parsing fails: that would wipe name/parent)
-            val rawMeta = getOrFetchBlob(metaEntry.hash, metaEntry.docId)
-            val metaElement = Json.parseToJsonElement(String(rawMeta, StandardCharsets.UTF_8)).jsonObject
-            val metaMap = metaElement.toMutableMap()
-            metaMap["lastOpenedPage"] = JsonPrimitive(pageIndex)
-            metaMap["lastOpened"] = JsonPrimitive(nowMs)
-            val newMetaBytes = JsonObject(metaMap).toString().toByteArray(StandardCharsets.UTF_8)
-            val newMetaHash = IndexParser.computeRootHash(newMetaBytes)
-
-            client.putBlob(newMetaHash, newMetaBytes, metaEntry.docId)
-            blobStore.putBlob(newMetaHash, newMetaBytes)
-
-            // 2. Update .content if present (cPages.lastOpened for firmware 3.x)
-            var newContentHash: String? = null
-            var newContentBytes: ByteArray? = null
-            if (contentEntry != null) {
-                try {
-                    val rawContent = getOrFetchBlob(contentEntry.hash, contentEntry.docId)
-                    val contentElement = Json.parseToJsonElement(String(rawContent, StandardCharsets.UTF_8)).jsonObject
-                    val contentMap = contentElement.toMutableMap()
-
-                    var pageId = ""
-                    val cPagesElement = contentElement["cPages"]?.jsonObject
-                    if (cPagesElement != null) {
-                        val pagesArray = cPagesElement["pages"]?.jsonArray
-                        if (pagesArray != null) {
-                            val activePages = mutableListOf<Pair<String, String>>()
-                            for ((pos, item) in pagesArray.withIndex()) {
-                                val obj = item as? JsonObject ?: continue
-                                val pid = obj["id"]?.jsonPrimitive?.contentOrNull ?: continue
-                                val delEl = obj["deleted"]
-                                val isDel = (delEl as? JsonObject)?.get("value")?.jsonPrimitive?.intOrNull == 1 ||
-                                    (delEl as? JsonPrimitive)?.intOrNull == 1 ||
-                                    (delEl as? JsonPrimitive)?.booleanOrNull == true
-                                if (isDel) continue
-                                val idxVal = (obj["idx"] as? JsonObject)?.get("value")?.jsonPrimitive?.contentOrNull
-                                    ?: (obj["idx"] as? JsonPrimitive)?.contentOrNull
-                                    ?: String.format("%06d", pos)
-                                activePages.add(idxVal to pid)
-                            }
-                            activePages.sortBy { it.first }
-                            if (pageIndex in activePages.indices) {
-                                pageId = activePages[pageIndex].second
-                            }
-                        }
-                    } else {
-                        val legacyPages = contentElement["pages"]?.jsonArray
-                        if (legacyPages != null && pageIndex in 0 until legacyPages.size) {
-                            pageId = (legacyPages[pageIndex] as? JsonPrimitive)?.contentOrNull.orEmpty()
-                        }
-                    }
-
-                    if (cPagesElement != null && pageId.isNotEmpty()) {
-                        val mutableCPages = cPagesElement.toMutableMap()
-                        val lastOpenedObj = buildJsonObject {
-                            put("value", JsonPrimitive(pageId))
-                            put("timestamp", JsonPrimitive("1:${pageIndex + 1}"))
-                        }
-                        mutableCPages["lastOpened"] = lastOpenedObj
-                        contentMap["cPages"] = JsonObject(mutableCPages)
-
-                        val updatedContentStr = JsonObject(contentMap).toString()
-                        val bytes = updatedContentStr.toByteArray(StandardCharsets.UTF_8)
-                        val hash = IndexParser.computeRootHash(bytes)
-                        client.putBlob(hash, bytes, contentEntry.docId)
-                        blobStore.putBlob(hash, bytes)
-                        newContentHash = hash
-                        newContentBytes = bytes
-                    }
-                } catch (_: Exception) {}
-            }
-
-            // 3. Update doc index
-            val updatedDocEntries = subfiles.map { entry ->
-                when (entry.docId) {
-                    metaEntry.docId -> Entry(
-                        hash = newMetaHash,
-                        type = entry.type,
-                        docId = entry.docId,
-                        subfiles = entry.subfiles,
-                        size = newMetaBytes.size.toLong()
-                    )
-                    contentEntry?.docId -> if (newContentHash != null && newContentBytes != null) {
-                        Entry(
-                            hash = newContentHash,
-                            type = entry.type,
-                            docId = entry.docId,
-                            subfiles = entry.subfiles,
-                            size = newContentBytes.size.toLong()
-                        )
-                    } else entry
-                    else -> entry
-                }
-            }
-
-            // Schema v4 doc hashes are sha256 of the serialized .docSchema (header carries the doc UUID);
-            // the old schema-3 hash-of-hashes produced a blob whose name didn't match its contents.
-            val (docSchemaBytes, newDocHash) = IndexParser.buildDocSchema(updatedDocEntries, docSchemaVer, docId)
-            client.putBlob(newDocHash, docSchemaBytes, "$docId.docSchema", "text/plain; charset=UTF-8")
-            blobStore.putBlob(newDocHash, docSchemaBytes)
-
-            // 4. Update root index (subfile count and total size must reflect the new doc index)
-            val updatedRootEntries = rootEntries.map { entry ->
-                if (entry.docId == docId) {
-                    Entry(
-                        hash = newDocHash,
-                        type = entry.type,
-                        docId = entry.docId,
-                        subfiles = updatedDocEntries.size,
-                        size = updatedDocEntries.sumOf { it.size }
-                    )
-                } else entry
-            }
-
-            val newRootBytes = IndexParser.formatIndex(updatedRootEntries, rootSchema, ".").toByteArray(StandardCharsets.UTF_8)
-            val newRootHash = IndexParser.computeRootHash(newRootBytes)
-            client.putBlob(newRootHash, newRootBytes, "root.docSchema", "text/plain; charset=UTF-8")
-            blobStore.putBlob(newRootHash, newRootBytes)
-
-            val newGen = client.updateRoot(newRootHash, root.generation, broadcast = true)
-            repository.saveRoot(newRootHash, newGen)
-            repository.clearPageSyncPending(docId)
-
-            val existingDoc = repository.getDocument(docId)
-            if (existingDoc != null) {
-                val updatedSubfiles = existingDoc.subfiles.toMutableMap()
-                updatedSubfiles[metaEntry.docId] = newMetaHash
-                if (contentEntry != null && newContentHash != null) {
-                    updatedSubfiles[contentEntry.docId] = newContentHash
-                }
-                repository.upsertDocument(
-                    existingDoc.copy(
-                        hash = newDocHash,
-                        subfiles = updatedSubfiles,
-                        lastOpenedPage = pageIndex
-                    )
+                val nowMs = System.currentTimeMillis().toString()
+                val (newDocHash, newHashes) = editRemoteDoc(
+                    docId,
+                    editMeta = {
+                        it["lastOpenedPage"] = JsonPrimitive(pageIndex)
+                        it["lastOpened"] = JsonPrimitive(nowMs)
+                    },
+                    editContent = { withLastOpenedPage(it, pageIndex) }
                 )
-            }
+                repository.clearPageSyncPending(docId)
+                repository.getDocument(docId)?.let { doc ->
+                    repository.upsertDocument(
+                        doc.copy(hash = newDocHash, subfiles = doc.subfiles + newHashes, lastOpenedPage = pageIndex)
+                    )
+                }
                 lastPushedPositionByDocId[docId] = pageIndex
                 lastPositionSyncError = null
                 true
@@ -410,6 +275,113 @@ class SyncEngine(
     var lastPositionSyncError: String? = null
         private set
 
+    /** Moves a cloud document or folder to the reMarkable trash, the same as deleting it on the tablet. */
+    suspend fun moveToTrash(docId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        remoteWriteMutex.withLock {
+            try {
+                editRemoteDoc(docId, editMeta = {
+                    it["parent"] = JsonPrimitive("trash")
+                    it["lastModified"] = JsonPrimitive(System.currentTimeMillis().toString())
+                })
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
+
+    /**
+     * Rewrites a cloud document's .metadata (and optionally .content) JSON, then commits a new root.
+     * Returns the new doc index hash and the new hash of each rewritten subfile.
+     */
+    private suspend fun editRemoteDoc(
+        docId: String,
+        editMeta: (MutableMap<String, JsonElement>) -> Unit,
+        editContent: ((JsonObject) -> JsonObject?)? = null
+    ): Pair<String, Map<String, String>> {
+        val root = client.getRoot()
+        val (rootEntries, rootSchema) = client.getRootIndex(root.hash)
+        val docEntry = rootEntries.firstOrNull { it.docId == docId }
+            ?: throw IllegalStateException("Document $docId not found in cloud root")
+        val (subfiles, docSchemaVer) = IndexParser.parseIndex(getOrFetchBlob(docEntry.hash, "$docId.docSchema"))
+        val metaEntry = subfiles.firstOrNull { it.docId.endsWith(".metadata") }
+            ?: throw IllegalStateException("Document $docId has no .metadata subfile")
+        val contentEntry = subfiles.firstOrNull { it.docId.endsWith(".content") }
+
+        val rewritten = mutableMapOf<String, Entry>()
+        suspend fun upload(entry: Entry, json: JsonObject) {
+            val bytes = json.toString().toByteArray(StandardCharsets.UTF_8)
+            val hash = IndexParser.computeRootHash(bytes)
+            client.putBlob(hash, bytes, entry.docId)
+            blobStore.putBlob(hash, bytes)
+            rewritten[entry.docId] = entry.copy(hash = hash, size = bytes.size.toLong())
+        }
+
+        // readJson throws on unparseable metadata, so we never upload a blank one that would wipe name/parent
+        val meta = readJson(metaEntry).toMutableMap()
+        editMeta(meta)
+        upload(metaEntry, JsonObject(meta))
+        if (contentEntry != null && editContent != null) {
+            // .content edits are best-effort; the metadata change is valid on its own
+            try {
+                editContent(readJson(contentEntry))?.let { upload(contentEntry, it) }
+            } catch (_: Exception) {}
+        }
+
+        val docEntries = subfiles.map { rewritten[it.docId] ?: it }
+        val (docSchemaBytes, newDocHash) = IndexParser.buildDocSchema(docEntries, docSchemaVer, docId)
+        client.putBlob(newDocHash, docSchemaBytes, "$docId.docSchema", "text/plain; charset=UTF-8")
+        blobStore.putBlob(newDocHash, docSchemaBytes)
+
+        // The root entry's subfile count and total size must reflect the new doc index
+        commitRoot(root, rootEntries.map {
+            if (it.docId == docId) it.copy(hash = newDocHash, subfiles = docEntries.size, size = docEntries.sumOf { e -> e.size }) else it
+        }, rootSchema)
+        return newDocHash to rewritten.mapValues { it.value.hash }
+    }
+
+    private suspend fun readJson(entry: Entry): JsonObject =
+        Json.parseToJsonElement(String(getOrFetchBlob(entry.hash, entry.docId), StandardCharsets.UTF_8)).jsonObject
+
+    /** Sets .content cPages.lastOpened (firmware 3.x) to the page at [pageIndex]; null if there is no such page. */
+    private fun withLastOpenedPage(content: JsonObject, pageIndex: Int): JsonObject? {
+        val cPages = content["cPages"]?.jsonObject ?: return null
+        val pages = cPages["pages"]?.jsonArray ?: return null
+        val activePages = mutableListOf<Pair<String, String>>()
+        for ((pos, item) in pages.withIndex()) {
+            val obj = item as? JsonObject ?: continue
+            val pid = obj["id"]?.jsonPrimitive?.contentOrNull ?: continue
+            val delEl = obj["deleted"]
+            val isDel = (delEl as? JsonObject)?.get("value")?.jsonPrimitive?.intOrNull == 1 ||
+                (delEl as? JsonPrimitive)?.intOrNull == 1 ||
+                (delEl as? JsonPrimitive)?.booleanOrNull == true
+            if (isDel) continue
+            val idxVal = (obj["idx"] as? JsonObject)?.get("value")?.jsonPrimitive?.contentOrNull
+                ?: (obj["idx"] as? JsonPrimitive)?.contentOrNull
+                ?: String.format("%06d", pos)
+            activePages.add(idxVal to pid)
+        }
+        activePages.sortBy { it.first }
+        val pageId = activePages.getOrNull(pageIndex)?.second ?: return null
+        val lastOpened = buildJsonObject {
+            put("value", JsonPrimitive(pageId))
+            put("timestamp", JsonPrimitive("1:${pageIndex + 1}"))
+        }
+        return JsonObject(content + ("cPages" to JsonObject(cPages + ("lastOpened" to lastOpened))))
+    }
+
+    /** Uploads a new root index and moves the cloud root to it. */
+    private suspend fun commitRoot(root: RootInfo, entries: List<Entry>, schema: String) {
+        val bytes = IndexParser.formatIndex(entries, schema).toByteArray(StandardCharsets.UTF_8)
+        val hash = IndexParser.computeRootHash(bytes)
+        client.putBlob(hash, bytes, "root.docSchema", "text/plain; charset=UTF-8")
+        blobStore.putBlob(hash, bytes)
+        val newGen = client.updateRoot(hash, root.generation, broadcast = true)
+        // Only advance the local root if we were already in sync; otherwise the next
+        // sync would report "up to date" and never pull changes made on other devices.
+        if (repository.getLocalRootHash() == root.hash) repository.saveRoot(hash, newGen)
+    }
+
     private suspend fun createRemoteFolder(folder: DocumentItem) {
         val nowMs = folder.lastModified.takeIf { it > 0L }?.toString() ?: System.currentTimeMillis().toString()
         val metaJson = buildJsonObject {
@@ -424,7 +396,6 @@ class SyncEngine(
         }.toString()
         val metaBytes = metaJson.toByteArray(StandardCharsets.UTF_8)
         val metaHash = IndexParser.computeRootHash(metaBytes)
-
         val metaEntry = Entry(
             hash = metaHash,
             type = Entry.FILE_TYPE,
@@ -432,25 +403,21 @@ class SyncEngine(
             subfiles = 0,
             size = metaBytes.size.toLong()
         )
-        val folderDocHash = IndexParser.computeDocIndexHash(listOf(metaEntry))
-        val docSchemaBytes = IndexParser.formatIndex(listOf(metaEntry), Entry.SCHEMA_V3).toByteArray(StandardCharsets.UTF_8)
+
+        // The folder's index must use the root's schema (v4: named by sha256 of its own bytes)
+        val root = client.getRoot()
+        val (entries, schema) = client.getRootIndex(root.hash)
+        val (docSchemaBytes, folderDocHash) = IndexParser.buildDocSchema(listOf(metaEntry), schema, folder.id)
 
         client.putBlob(metaHash, metaBytes, "${folder.id}.metadata")
         client.putBlob(folderDocHash, docSchemaBytes, "${folder.id}.docSchema", "text/plain; charset=UTF-8")
-
-        val root = client.getRoot()
-        val (entries, schema) = client.getRootIndex(root.hash)
-        val updatedEntries = entries.filterNot { it.docId == folder.id } + Entry(
+        commitRoot(root, entries.filterNot { it.docId == folder.id } + Entry(
             hash = folderDocHash,
             type = Entry.DOC_TYPE,
             docId = folder.id,
             subfiles = 1,
             size = metaBytes.size.toLong()
-        )
-        val newRootBytes = IndexParser.formatIndex(updatedEntries, schema).toByteArray(StandardCharsets.UTF_8)
-        val newRootHash = IndexParser.computeRootHash(newRootBytes)
-        client.putBlob(newRootHash, newRootBytes, "root.docSchema", "text/plain; charset=UTF-8")
-        client.updateRoot(newRootHash, root.generation, broadcast = true)
+        ), schema)
     }
 
     private suspend fun getOrFetchBlob(hash: String, filename: String): ByteArray {

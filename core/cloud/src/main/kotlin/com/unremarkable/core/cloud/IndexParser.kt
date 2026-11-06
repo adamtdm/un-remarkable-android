@@ -95,8 +95,5 @@ object IndexParser {
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
-    fun computeRootHash(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256")
-            .digest(bytes)
-            .joinToString("") { "%02x".format(it) }
+    fun computeRootHash(bytes: ByteArray): String = FileBlobStore.sha256(bytes)
 }
